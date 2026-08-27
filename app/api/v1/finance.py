@@ -373,6 +373,7 @@ async def record_payment(
     # Telegram xabarnoma (Rasmiy to'lov cheki) yuborish
     telegram_sent = False
     payment_time_str = payment.created_at.strftime('%Y-%m-%d %H:%M') if hasattr(payment, 'created_at') and payment.created_at else date.today().strftime('%Y-%m-%d')
+    note_line = f"💬 Izoh: {payment.note}\n" if payment.note else ""
     
     tg_msg = (
         f"🧾 <b>RASMIY TO'LOV CHEKI #{payment.id}</b>\n"
@@ -385,7 +386,7 @@ async def record_payment(
         f"📅 To'lov oyi: <b>{payment.month_for}</b>\n"
         f"💳 To'lov turi: <b>{payment.payment_method}</b>\n"
         f"🕒 Sana va vaqt: <b>{payment_time_str}</b>\n"
-        f"{f'💬 Izoh: {payment.note}\n' if payment.note else ''}"
+        f"{note_line}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 <b>HISOB-KITOB HOLATI:</b>\n"
         f"🔹 Talab etilgan oylik summa: <b>{total_due_amount:,.0f} so'm</b>\n"

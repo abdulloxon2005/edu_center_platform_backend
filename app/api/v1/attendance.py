@@ -142,12 +142,13 @@ async def mark_attendance(
             else:
                 status_text = "Farzandingiz darsda (Sababli 📋)"
 
+            note_line = f"\n💬 Izoh: {item.note}" if item.note else ""
             msg = (
                 f"🔔 <b>O'QUV MARKAZI DAVOMAT XABARI</b>\n\n"
                 f"👤 Farzandingiz: <b>{student.full_name}</b> (ID: {student.login_id})\n"
                 f"📅 Sana: {lesson.lesson_date}\n"
-                f"📌 Holati: <b>{status_text}</b>\n"
-                f"{f'💬 Izoh: {item.note}' if item.note else ''}"
+                f"📌 Holati: <b>{status_text}</b>"
+                f"{note_line}"
             )
             await send_telegram_notification(student.telegram_chat_id, msg)
 
