@@ -39,11 +39,14 @@ async def monthly_billing_scheduler():
             logger.error(f"Oylik billing scheduler xatosi: {e}")
         await asyncio.sleep(1800)
 
+from app.core.db_migrate import ensure_sqlite_columns
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # App ishga tushganda SQLite jadvallarini avtomatik yaratish
+    # App ishga tushganda SQLite jadvallarini avtomatik yaratish va yangilash
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    ensure_sqlite_columns()
     
     # Boshlang'ich Super Admin (faqat development muhitda)
     if settings.ENVIRONMENT == 'development':
