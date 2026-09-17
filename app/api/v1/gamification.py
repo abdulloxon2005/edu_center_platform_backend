@@ -98,7 +98,28 @@ async def update_redemption_status(
     if not red:
         raise HTTPException(status_code=404, detail="Sovg'a arizasi topilmadi!")
 
+    old_status = red.status
     red.status = status_in.status
+
+    if status_in.status == "REJECTED" and old_status != "REJECTED":
+        # Refund coins to student
+        st_res = await db.execute(select(User).where(User.id == red.student_id))
+        student = st_res.scalar_one_or_none()
+        if student:
+            student.coins_balance += red.coins_spent
+            refund_tx = CoinTransaction(
+                student_id=student.id,
+                amount=red.coins_spent,
+                reason=f"Sovg'a arizasi rad etildi: {red.coins_spent} coin qaytarildi"
+            )
+            db.add(refund_tx)
+
+        # Restore stock quantity
+        item_res = await db.execute(select(RewardItem).where(RewardItem.id == red.reward_item_id))
+        item = item_res.scalar_one_or_none()
+        if item:
+            item.stock_quantity += 1
+
     await db.commit()
     return {"message": f"Sovg'a arizasi holati '{status_in.status}' ga o'zgartirildi!"}
 

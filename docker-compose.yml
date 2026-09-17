@@ -39,7 +39,7 @@ services:
   # React Frontend + Nginx Reverse Proxy
   frontend:
     build:
-      context: ../edu_center_platform_frontend
+      context: ../frontend
       args:
         VITE_API_BASE_URL: /api/v1
     restart: unless-stopped
@@ -50,7 +50,7 @@ services:
 
   # Telegram Bot
   telegram-bot:
-    build: ../edu_center_platform_tg_bot
+    build: ../telegram_bot
     restart: unless-stopped
     environment:
       API_BASE_URL: http://backend:8000/api/v1

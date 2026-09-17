@@ -215,6 +215,7 @@ async def grade_homework(
     if not sub:
         raise HTTPException(status_code=404, detail="Bajarilgan vazifa topilmadi!")
 
+    previous_coins = sub.coins_awarded or 0
     sub.grade = grade_in.grade
     sub.coins_awarded = grade_in.coins_awarded
     sub.feedback = grade_in.feedback
@@ -222,11 +223,12 @@ async def grade_homework(
 
     student_res = await db.execute(select(User).where(User.id == sub.student_id))
     student = student_res.scalar_one_or_none()
-    if student and grade_in.coins_awarded > 0:
-        student.coins_balance += grade_in.coins_awarded
+    coins_diff = grade_in.coins_awarded - previous_coins
+    if student and coins_diff != 0:
+        student.coins_balance = max(0, student.coins_balance + coins_diff)
         coin_tx = CoinTransaction(
             student_id=student.id,
-            amount=grade_in.coins_awarded,
+            amount=coins_diff,
             reason=f"Uy vazifasi uchun mukofot tangalari (HW #{sub.homework_id})"
         )
         db.add(coin_tx)

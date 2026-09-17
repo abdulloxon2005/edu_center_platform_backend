@@ -87,6 +87,10 @@ class GroupStudent(Base):
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     joined_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    custom_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    discount_type: Mapped[Optional[str]] = mapped_column(String(50), default="STANDARD")  # STANDARD, GRANT_100, DISCOUNT_50, CHILD_TARIFF, ADULT_TARIFF, PRORATED, CUSTOM
+    discount_note: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
 
 class User(Base):
     __tablename__ = "users"

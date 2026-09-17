@@ -398,12 +398,21 @@ class DebtorResponse(BaseModel):
     total_debt: float
     unpaid_months: List[str]
 
+class GroupAssignStudentRequest(BaseModel):
+    custom_price: Optional[float] = None
+    discount_type: Optional[str] = "STANDARD"  # STANDARD, GRANT_100, DISCOUNT_50, CHILD_TARIFF, ADULT_TARIFF, PRORATED, CUSTOM
+    discount_note: Optional[str] = None
+
 class StudentGroupCourseInfo(BaseModel):
     group_id: int
     group_name: str
     course_id: int
     course_title: str
     price_monthly: float
+    effective_fee: Optional[float] = None
+    discount_type: Optional[str] = "STANDARD"
+    discount_note: Optional[str] = None
+
 
 class StudentBillingInfoResponse(BaseModel):
     student_id: int

@@ -6,7 +6,7 @@ from typing import List
 from app.core.database import get_db
 from app.models.models import Certificate, User, UserRole, Course
 from app.schemas.schemas import CertificateCreate, CertificateResponse
-from app.api.v1.auth import get_current_user
+from app.api.deps import get_current_user
 
 router = APIRouter()
 

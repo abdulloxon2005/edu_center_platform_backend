@@ -120,14 +120,15 @@ async def test_03_change_password_and_login_new_pass():
         # Change password
         ch_res = await ac.post("/api/v1/auth/change-password", json={
             "old_password": "Ali",
-            "new_password": "newpassword123"
+            "new_password": "NewPassword123"
         }, headers=headers)
         assert ch_res.status_code == 200
 
         # Login with new password
-        login2_res = await ac.post("/api/v1/auth/login", json={"login_id": "100101", "password": "newpassword123"})
+        login2_res = await ac.post("/api/v1/auth/login", json={"login_id": "100101", "password": "NewPassword123"})
         assert login2_res.status_code == 200
         assert login2_res.json()["must_change_password"] is False
+
 
 @pytest.mark.asyncio
 async def test_04_invalid_login_and_unauthorized_access():
@@ -532,10 +533,20 @@ async def test_13_crm_leads_conversion():
 @pytest.mark.asyncio
 async def test_14_click_merchant_webhook():
     """14. Click Merchant to'lov integratsiyasi (Prepare & Complete) testi"""
+    import hashlib
+    from app.core.config import settings
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         admin_login = await ac.post("/api/v1/auth/login", json={"login_id": "777777", "password": "superadmin123"})
         students = (await ac.get("/api/v1/users/?role=STUDENT", headers={"Authorization": f"Bearer {admin_login.json()['access_token']}"})).json()
         student_id = str(students[0]["id"])
+
+        amount = 500000.0
+        amount_str = f"{amount:.2f}".rstrip('0').rstrip('.')
+        sign_time = "2026-08-08 20:00:00"
+
+        # Prepare sign (action=0)
+        src_0 = f"9998881112345{settings.CLICK_SECRET_KEY}{student_id}{amount_str}0{sign_time}"
+        sign_0 = hashlib.md5(src_0.encode('utf-8')).hexdigest()
 
         # Prepare Action (action=0)
         prep_res = await ac.post("/api/v1/payments/click/webhook", data={
@@ -543,14 +554,18 @@ async def test_14_click_merchant_webhook():
             "service_id": "12345",
             "click_paydoc_id": "554433",
             "merchant_trans_id": student_id,
-            "amount": 500000.0,
+            "amount": amount,
             "action": 0,
             "error": 0,
-            "sign_time": "2026-08-08 20:00:00",
-            "sign_string": "dummy"
+            "sign_time": sign_time,
+            "sign_string": sign_0
         })
         assert prep_res.status_code == 200
         assert prep_res.json()["error"] == 0
+
+        # Complete sign (action=1)
+        src_1 = f"9998881112345{settings.CLICK_SECRET_KEY}{student_id}{amount_str}1{sign_time}"
+        sign_1 = hashlib.md5(src_1.encode('utf-8')).hexdigest()
 
         # Complete Action (action=1)
         comp_res = await ac.post("/api/v1/payments/click/webhook", data={
@@ -558,15 +573,16 @@ async def test_14_click_merchant_webhook():
             "service_id": "12345",
             "click_paydoc_id": "554433",
             "merchant_trans_id": student_id,
-            "amount": 500000.0,
+            "amount": amount,
             "action": 1,
             "error": 0,
-            "sign_time": "2026-08-08 20:00:00",
-            "sign_string": "dummy"
+            "sign_time": sign_time,
+            "sign_string": sign_1
         })
         assert comp_res.status_code == 200
         assert comp_res.json()["error"] == 0
         assert "merchant_confirm_id" in comp_res.json()
+
 
 # ----------------------------------------------------
 # 11. TEACHER PAYROLL TESTS

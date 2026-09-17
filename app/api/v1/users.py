@@ -7,7 +7,10 @@ from sqlalchemy import select, func
 
 from app.core.database import get_db
 from app.core.security import get_password_hash
-from app.models.models import User, UserRole, StudentFreeze, GroupTransferLog, ParentStudent, TelegramNotificationLog
+from app.models.models import (
+    User, UserRole, StudentStatusEnum, StudentFreeze, GroupTransferLog,
+    ParentStudent, TelegramNotificationLog, GroupStudent, CoinTransaction
+)
 from app.schemas.schemas import (
     UserCreate, UserUpdate, UserResponse,
     StudentFreezeCreate, StudentFreezeResponse,
@@ -62,15 +65,20 @@ async def create_user(
     logger.info(f"Yangi foydalanuvchi yaratildi: {db_user.login_id} ({db_user.role})")
     return db_user
 
+from app.models.models import User, UserRole, StudentFreeze, GroupTransferLog, ParentStudent, TelegramNotificationLog, GroupStudent, CoinTransaction
+
 @router.get("/", response_model=List[UserResponse])
 async def list_users(
     role: Optional[UserRole] = None,
+    include_inactive: bool = Query(False),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
     stmt = select(User)
+    if not include_inactive:
+        stmt = stmt.where(User.is_active == True)
     if role:
         stmt = stmt.where(User.role == role)
     stmt = stmt.offset(skip).limit(limit)
@@ -112,6 +120,7 @@ async def update_user(
 @router.delete("/{user_id}")
 async def delete_user(
     user_id: int,
+    permanent: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
@@ -120,10 +129,23 @@ async def delete_user(
     if not user:
         raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi!")
 
-    user.is_active = False
-    await db.commit()
-    logger.info(f"Foydalanuvchi deaktivlashtirildi: {user.login_id}")
-    return {"message": f"Foydalanuvchi '{user.full_name}' muvaffaqiyatli o'chirildi (deaktivlashtirildi)!"}
+    if permanent:
+        # Bog'langan yozuvlarni tozalash
+        from sqlalchemy import delete
+        await db.execute(delete(GroupStudent).where(GroupStudent.student_id == user_id))
+        await db.execute(delete(ParentStudent).where((ParentStudent.student_id == user_id) | (ParentStudent.parent_id == user_id)))
+        await db.execute(delete(CoinTransaction).where(CoinTransaction.student_id == user_id))
+        await db.delete(user)
+        await db.commit()
+        logger.info(f"Foydalanuvchi bazadan to'liq o'chirildi: {user.login_id}")
+        return {"message": f"Foydalanuvchi '{user.full_name}' tizimdan butunlay o'chirildi!"}
+    else:
+        user.is_active = False
+        user.student_status = StudentStatusEnum.ARCHIVED
+        await db.commit()
+        logger.info(f"Foydalanuvchi deaktivlashtirildi: {user.login_id}")
+        return {"message": f"Foydalanuvchi '{user.full_name}' muvaffaqiyatli o'chirildi (deaktivlashtirildi)!"}
+
 
 
 # StudentFreeze endpoints (AUTH QOSHILDI)

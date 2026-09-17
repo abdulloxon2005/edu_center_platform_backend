@@ -26,6 +26,17 @@ from app.services.notification import send_telegram_notification
 router = APIRouter()
 
 
+def calculate_student_effective_fee(gs: GroupStudent, crs: Course) -> float:
+    """O'quvchining guruhdagi individual tarifi yoki fan standart narxini hisoblash"""
+    if gs.discount_type == "GRANT_100":
+        return 0.0
+    elif gs.discount_type == "DISCOUNT_50":
+        return round(crs.price_monthly * 0.5, -2)
+    elif gs.custom_price is not None:
+        return float(gs.custom_price)
+    return float(crs.price_monthly)
+
+
 async def sync_student_billing(db: AsyncSession, student_id: int, month_for: str) -> Optional[StudentBilling]:
     """O'quvchining ko'rsatilgan oy bo'yicha to'lovlari asosida StudentBilling yozuvini aniq sinxronizatsiya qilish"""
     # 1. Ushbu oy uchun to'langan barcha summalar (Payment jadvalining o'zidan)
@@ -37,7 +48,7 @@ async def sync_student_billing(db: AsyncSession, student_id: int, month_for: str
     )
     total_paid_for_month = pay_res.scalar() or 0.0
 
-    # 2. O'quvchining faol guruhlari va oylik to'lovi
+    # 2. O'quvchining faol guruhlari va oylik to'lovi (Individual tarif hisobga olingan holda)
     stmt = (
         select(GroupStudent, Group, Course)
         .join(Group, GroupStudent.group_id == Group.id)
@@ -50,7 +61,7 @@ async def sync_student_billing(db: AsyncSession, student_id: int, month_for: str
     )
     res_groups = await db.execute(stmt)
     active_rows = res_groups.all()
-    total_monthly_fee = sum(crs.price_monthly for _, _, crs in active_rows)
+    total_monthly_fee = sum(calculate_student_effective_fee(gs, crs) for gs, _, crs in active_rows)
     group_id = active_rows[0][1].id if active_rows else 1
 
     # 3. StudentBilling yozuvlarini qidirish
@@ -63,15 +74,15 @@ async def sync_student_billing(db: AsyncSession, student_id: int, month_for: str
     billings = billing_res.scalars().all()
 
     if not billings:
-        if total_paid_for_month > 0 or total_monthly_fee > 0:
-            due = total_monthly_fee if total_monthly_fee > 0 else total_paid_for_month
+        if total_paid_for_month > 0 or total_monthly_fee >= 0:
+            due = total_monthly_fee
             billing = StudentBilling(
                 student_id=student_id,
                 group_id=group_id,
                 month_for=month_for,
                 amount_due=due,
                 amount_paid=total_paid_for_month,
-                is_paid=(total_paid_for_month >= due and due > 0),
+                is_paid=(total_paid_for_month >= due),
                 due_date=date.today()
             )
             db.add(billing)
@@ -81,11 +92,11 @@ async def sync_student_billing(db: AsyncSession, student_id: int, month_for: str
     else:
         primary_billing = billings[0]
         total_due = sum(b.amount_due for b in billings)
-        if total_due <= 0:
-            total_due = total_monthly_fee if total_monthly_fee > 0 else total_paid_for_month
+        if total_due <= 0 and total_monthly_fee > 0:
+            total_due = total_monthly_fee
 
         primary_billing.amount_paid = total_paid_for_month
-        primary_billing.is_paid = (total_paid_for_month >= total_due and total_due > 0)
+        primary_billing.is_paid = (total_paid_for_month >= total_due)
 
         for b in billings[1:]:
             b.amount_paid = 0.0
@@ -118,7 +129,7 @@ async def get_student_billing_info(
     if not student:
         raise HTTPException(status_code=404, detail="O'quvchi topilmadi!")
 
-    # 2. O'quvchi biriktirilgan faol guruhlar va kurslar
+    # 2. O'quvchi biriktirilgan faol guruhlar va kurslar (tariflari bilan)
     stmt = (
         select(GroupStudent, Group, Course)
         .join(Group, GroupStudent.group_id == Group.id)
@@ -135,14 +146,19 @@ async def get_student_billing_info(
     groups_info = []
     total_monthly_fee = 0.0
     for gs, grp, crs in rows:
+        eff_fee = calculate_student_effective_fee(gs, crs)
         groups_info.append(StudentGroupCourseInfo(
             group_id=grp.id,
             group_name=grp.name,
             course_id=crs.id,
             course_title=crs.title,
-            price_monthly=crs.price_monthly
+            price_monthly=crs.price_monthly,
+            effective_fee=eff_fee,
+            discount_type=gs.discount_type or "STANDARD",
+            discount_note=gs.discount_note
         ))
-        total_monthly_fee += crs.price_monthly
+        total_monthly_fee += eff_fee
+
 
     # 3. Tanlangan oy bo'yicha StudentBilling ni sinxronlashtirish va olish
     await sync_student_billing(db, student_id, month_for)
@@ -871,19 +887,47 @@ async def get_payment_receipt_pdf(
 async def calculate_proration(
     monthly_fee: float,
     total_lessons: int = 12,
-    remaining_lessons: int = 6
+    remaining_lessons: int = 6,
+    discount_type: Optional[str] = "STANDARD",
+    custom_discount_amount: Optional[float] = 0.0
 ):
-    if total_lessons <= 0 or remaining_lessons <= 0:
-        return {"calculated_fee": monthly_fee, "discount": 0.0}
-    
+    if discount_type == "GRANT_100":
+        return {
+            "monthly_fee": monthly_fee,
+            "total_lessons": total_lessons,
+            "remaining_lessons": remaining_lessons,
+            "calculated_fee": 0.0,
+            "discount": monthly_fee,
+            "tariff_name": "100% Grant (To'liq Imtiyozli)"
+        }
+    elif discount_type == "DISCOUNT_50":
+        calc = round(monthly_fee * 0.5, -2)
+        return {
+            "monthly_fee": monthly_fee,
+            "total_lessons": total_lessons,
+            "remaining_lessons": remaining_lessons,
+            "calculated_fee": calc,
+            "discount": monthly_fee - calc,
+            "tariff_name": "50% Chegirma (Yarim Imtiyozli)"
+        }
+
+    if total_lessons <= 0:
+        total_lessons = 12
+    if remaining_lessons <= 0:
+        remaining_lessons = total_lessons
+
     per_lesson_fee = monthly_fee / total_lessons
-    calculated_fee = round(per_lesson_fee * remaining_lessons, -2)
-    discount = monthly_fee - calculated_fee
+    base_calc = round(per_lesson_fee * remaining_lessons, -2)
+    final_fee = max(0.0, base_calc - (custom_discount_amount or 0.0))
+    discount = monthly_fee - final_fee
+
     return {
         "monthly_fee": monthly_fee,
         "total_lessons": total_lessons,
         "remaining_lessons": remaining_lessons,
-        "calculated_fee": calculated_fee,
-        "discount": discount
+        "calculated_fee": final_fee,
+        "discount": discount,
+        "tariff_name": "Pro-rata / Standart hisob-kitob"
     }
+
 

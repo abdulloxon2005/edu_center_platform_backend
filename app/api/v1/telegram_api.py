@@ -203,7 +203,8 @@ async def get_student_payments(
             StudentBilling.student_id == student_id
         )
     )
-    total_due = all_billings_res.scalar() or monthly_fee
+    total_due_val = all_billings_res.scalar()
+    total_due = total_due_val if total_due_val is not None else monthly_fee
 
     all_payments_res = await db.execute(
         select(func.sum(Payment.amount)).where(

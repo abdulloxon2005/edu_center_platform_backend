@@ -173,10 +173,13 @@ async def delete_group(
     await db.commit()
     return {"message": f"Guruh '{group.name}' deaktivlashtirildi!"}
 
+from app.schemas.schemas import GroupCreate, GroupUpdate, GroupResponse, GroupDetailResponse, UserResponse, GroupAssignStudentRequest
+
 @router.post("/{group_id}/students/{student_id}")
 async def assign_student_to_group(
     group_id: int,
     student_id: int,
+    tariff_in: Optional[GroupAssignStudentRequest] = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
@@ -198,16 +201,53 @@ async def assign_student_to_group(
     )
     existing = exist_res.scalar_one_or_none()
     if existing:
-        if not existing.is_active:
-            existing.is_active = True
-            await db.commit()
-            return {"message": f"O'quvchi '{student.full_name}' guruhga qayta faollashtirildi!"}
-        return {"message": f"O'quvchi '{student.full_name}' allaqachon ushbu guruhda mavjud!"}
+        existing.is_active = True
+        if tariff_in:
+            if tariff_in.custom_price is not None:
+                existing.custom_price = tariff_in.custom_price
+            if tariff_in.discount_type is not None:
+                existing.discount_type = tariff_in.discount_type
+            if tariff_in.discount_note is not None:
+                existing.discount_note = tariff_in.discount_note
+        await db.commit()
+        return {"message": f"O'quvchi '{student.full_name}' guruh tarif ma'lumotlari yangilandi va faollashtirildi!"}
 
-    group_student = GroupStudent(group_id=group_id, student_id=student_id)
+    custom_price = tariff_in.custom_price if tariff_in else None
+    discount_type = tariff_in.discount_type if tariff_in and tariff_in.discount_type else "STANDARD"
+    discount_note = tariff_in.discount_note if tariff_in else None
+
+    group_student = GroupStudent(
+        group_id=group_id,
+        student_id=student_id,
+        custom_price=custom_price,
+        discount_type=discount_type,
+        discount_note=discount_note
+    )
     db.add(group_student)
     await db.commit()
     return {"message": f"O'quvchi '{student.full_name}' muvaffaqiyatli '{group.name}' guruhiga qo'shildi!"}
+
+@router.put("/{group_id}/students/{student_id}/tariff")
+async def update_student_tariff(
+    group_id: int,
+    student_id: int,
+    tariff_in: GroupAssignStudentRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    exist_res = await db.execute(
+        select(GroupStudent).where(GroupStudent.group_id == group_id, GroupStudent.student_id == student_id)
+    )
+    existing = exist_res.scalar_one_or_none()
+    if not existing:
+        raise HTTPException(status_code=404, detail="O'quvchi ushbu guruhda topilmadi!")
+
+    existing.custom_price = tariff_in.custom_price
+    existing.discount_type = tariff_in.discount_type or "STANDARD"
+    existing.discount_note = tariff_in.discount_note
+    await db.commit()
+    return {"message": "O'quvchining guruhdagi individual tarifi yangilandi!"}
+
 
 @router.get("/{group_id}/students", response_model=List[UserResponse])
 async def list_group_students(
