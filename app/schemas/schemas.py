@@ -135,7 +135,7 @@ class GroupResponse(BaseModel):
     name: str
     course_id: int
     teacher_id: int
-    room_id: int
+    room_id: Optional[int] = None
     days_of_week: str
     start_time: str
     end_time: str
