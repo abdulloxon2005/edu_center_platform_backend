@@ -37,7 +37,11 @@ async def click_webhook(
         logger.warning(f"Click webhook: noto'g'ri imzo. trans_id={click_trans_id}")
         return {"error": -8, "error_note": "Error in sign"}
 
-    student_id = int(merchant_trans_id)
+    try:
+        student_id = int(merchant_trans_id)
+    except (ValueError, TypeError):
+        return {"error": -5, "error_note": "User not found (Invalid merchant_trans_id)"}
+
     student_res = await db.execute(select(User).where(User.id == student_id))
     student = student_res.scalar_one_or_none()
     if not student:

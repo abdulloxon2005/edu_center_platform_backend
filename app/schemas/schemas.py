@@ -29,6 +29,9 @@ class LinkTelegramChatRequest(BaseModel):
     login_id: str
     chat_id: str
 
+class TelegramLoginRequest(BaseModel):
+    telegram_id: str
+
 # User Schemas
 class UserBase(BaseModel):
     full_name: str
@@ -141,11 +144,16 @@ class GroupResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class GroupStudentItemResponse(UserResponse):
+    discount_type: Optional[str] = "STANDARD"
+    custom_price: Optional[float] = None
+    discount_note: Optional[str] = None
+
 class GroupDetailResponse(GroupResponse):
     course: Optional[CourseResponse] = None
     teacher: Optional[UserResponse] = None
     room: Optional[RoomResponse] = None
-    students: List[UserResponse] = []
+    students: List[GroupStudentItemResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -401,7 +409,14 @@ class DebtorResponse(BaseModel):
 class GroupAssignStudentRequest(BaseModel):
     custom_price: Optional[float] = None
     discount_type: Optional[str] = "STANDARD"  # STANDARD, GRANT_100, DISCOUNT_50, CHILD_TARIFF, ADULT_TARIFF, PRORATED, CUSTOM
+    tariff_type: Optional[str] = None  # Frontend alias
     discount_note: Optional[str] = None
+
+    def get_effective_discount_type(self) -> str:
+        t = self.discount_type or self.tariff_type or "STANDARD"
+        if t == "STANDART":
+            return "STANDARD"
+        return t
 
 class StudentGroupCourseInfo(BaseModel):
     group_id: int

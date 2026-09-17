@@ -110,6 +110,15 @@ async def update_user(
         raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi!")
 
     update_data = user_in.model_dump(exclude_unset=True)
+
+    # Telefon raqami o'zgartirilayotgan bo'lsa, takroriylikni tekshirish
+    if "phone" in update_data and update_data["phone"] and update_data["phone"] != user.phone:
+        existing_phone = await db.execute(
+            select(User).where(User.phone == update_data["phone"], User.id != user_id)
+        )
+        if existing_phone.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Ushbu telefon raqamiga ega boshqa foydalanuvchi allaqachon mavjud!")
+
     for field, value in update_data.items():
         setattr(user, field, value)
 
@@ -132,9 +141,18 @@ async def delete_user(
     if permanent:
         # Bog'langan yozuvlarni tozalash
         from sqlalchemy import delete
+        from app.models.models import Attendance, HomeworkSubmission, Payment, StudentBilling, ExamResult, Certificate, SupportTicket
         await db.execute(delete(GroupStudent).where(GroupStudent.student_id == user_id))
         await db.execute(delete(ParentStudent).where((ParentStudent.student_id == user_id) | (ParentStudent.parent_id == user_id)))
         await db.execute(delete(CoinTransaction).where(CoinTransaction.student_id == user_id))
+        await db.execute(delete(Attendance).where(Attendance.student_id == user_id))
+        await db.execute(delete(HomeworkSubmission).where(HomeworkSubmission.student_id == user_id))
+        await db.execute(delete(ExamResult).where(ExamResult.student_id == user_id))
+        await db.execute(delete(Certificate).where(Certificate.student_id == user_id))
+        await db.execute(delete(StudentBilling).where(StudentBilling.student_id == user_id))
+        await db.execute(delete(Payment).where(Payment.student_id == user_id))
+        await db.execute(delete(StudentFreeze).where(StudentFreeze.student_id == user_id))
+        await db.execute(delete(SupportTicket).where(SupportTicket.user_id == user_id))
         await db.delete(user)
         await db.commit()
         logger.info(f"Foydalanuvchi bazadan to'liq o'chirildi: {user.login_id}")
@@ -165,6 +183,13 @@ async def create_student_freeze(
 ):
     new_freeze = StudentFreeze(**freeze_in.model_dump())
     db.add(new_freeze)
+
+    # O'quvchining asosiy holatini ham muzlatilgan (FROZEN) holatga sinxronlashtirish
+    st_res = await db.execute(select(User).where(User.id == freeze_in.student_id))
+    st = st_res.scalar_one_or_none()
+    if st:
+        st.student_status = StudentStatusEnum.FROZEN
+
     await db.commit()
     await db.refresh(new_freeze)
     return new_freeze
@@ -205,6 +230,18 @@ async def create_parent_student(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_admin)
 ):
+    exist_res = await db.execute(
+        select(ParentStudent).where(
+            ParentStudent.parent_id == ps_in.parent_id,
+            ParentStudent.student_id == ps_in.student_id
+        )
+    )
+    existing = exist_res.scalar_one_or_none()
+    if existing:
+        existing.relationship_type = ps_in.relationship_type
+        await db.commit()
+        return existing
+
     new_ps = ParentStudent(**ps_in.model_dump())
     db.add(new_ps)
     await db.commit()

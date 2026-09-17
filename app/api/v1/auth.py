@@ -8,7 +8,7 @@ from app.core.security import (
     get_password_hash, validate_password_strength, verify_token
 )
 from app.models.models import User, UserRole
-from app.schemas.schemas import Token, UserResponse, LoginRequest, ChangePasswordRequest, LinkTelegramChatRequest
+from app.schemas.schemas import Token, UserResponse, LoginRequest, ChangePasswordRequest, LinkTelegramChatRequest, TelegramLoginRequest
 from app.api.deps import get_current_user
 
 router = APIRouter()
@@ -106,6 +106,35 @@ async def link_telegram_chat(
         "student_name": student.full_name,
         "login_id": student.login_id
     }
+
+@router.post("/telegram-login", response_model=Token)
+async def telegram_login(req: TelegramLoginRequest, db: AsyncSession = Depends(get_db)):
+    """Telegram Mini App orqali telegram_chat_id bo'yicha tezkor kirish"""
+    if not req.telegram_id:
+        raise HTTPException(status_code=400, detail="Telegram ID kiritilmadi!")
+
+    stmt = select(User).where(User.telegram_chat_id == req.telegram_id, User.is_active == True)
+    res = await db.execute(stmt)
+    user = res.scalars().first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Ushbu Telegram akkauntga biriktirilgan foydalanuvchi topilmadi. Iltimos, 6 talik ID orqali kiring."
+        )
+
+    access_token = create_access_token(subject=user.id)
+    refresh_token = create_refresh_token(subject=user.id)
+    return Token(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        user_id=user.id,
+        login_id=user.login_id,
+        role=user.role,
+        full_name=user.full_name,
+        must_change_password=not user.is_password_changed
+    )
 
 @router.get("/me", response_model=UserResponse)
 async def read_current_user(current_user: User = Depends(get_current_user)):

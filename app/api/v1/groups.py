@@ -91,11 +91,33 @@ async def get_group(
     room_res = await db.execute(select(Room).where(Room.id == group.room_id))
 
     students_stmt = (
-        select(User)
+        select(User, GroupStudent.discount_type, GroupStudent.custom_price, GroupStudent.discount_note)
         .join(GroupStudent, GroupStudent.student_id == User.id)
         .where(GroupStudent.group_id == group_id, GroupStudent.is_active == True)
+        .order_by(User.full_name.asc())
     )
     students_res = await db.execute(students_stmt)
+    students_rows = students_res.all()
+
+    students_list = []
+    for u, disc_type, cust_price, disc_note in students_rows:
+        students_list.append({
+            "id": u.id,
+            "login_id": u.login_id,
+            "full_name": u.full_name,
+            "phone": u.phone,
+            "parent_phone": u.parent_phone,
+            "role": u.role,
+            "student_status": u.student_status,
+            "is_active": u.is_active,
+            "is_password_changed": u.is_password_changed,
+            "coins_balance": u.coins_balance,
+            "telegram_chat_id": u.telegram_chat_id,
+            "created_at": u.created_at,
+            "discount_type": disc_type or "STANDARD",
+            "custom_price": cust_price,
+            "discount_note": disc_note
+        })
 
     return GroupDetailResponse(
         id=group.id,
@@ -111,7 +133,7 @@ async def get_group(
         course=course_res.scalar_one_or_none(),
         teacher=teacher_res.scalar_one_or_none(),
         room=room_res.scalar_one_or_none(),
-        students=list(students_res.scalars().all())
+        students=students_list
     )
 
 @router.put("/{group_id}", response_model=GroupResponse)
@@ -205,15 +227,14 @@ async def assign_student_to_group(
         if tariff_in:
             if tariff_in.custom_price is not None:
                 existing.custom_price = tariff_in.custom_price
-            if tariff_in.discount_type is not None:
-                existing.discount_type = tariff_in.discount_type
+            existing.discount_type = tariff_in.get_effective_discount_type()
             if tariff_in.discount_note is not None:
                 existing.discount_note = tariff_in.discount_note
         await db.commit()
         return {"message": f"O'quvchi '{student.full_name}' guruh tarif ma'lumotlari yangilandi va faollashtirildi!"}
 
     custom_price = tariff_in.custom_price if tariff_in else None
-    discount_type = tariff_in.discount_type if tariff_in and tariff_in.discount_type else "STANDARD"
+    discount_type = tariff_in.get_effective_discount_type() if tariff_in else "STANDARD"
     discount_note = tariff_in.discount_note if tariff_in else None
 
     group_student = GroupStudent(
@@ -243,7 +264,7 @@ async def update_student_tariff(
         raise HTTPException(status_code=404, detail="O'quvchi ushbu guruhda topilmadi!")
 
     existing.custom_price = tariff_in.custom_price
-    existing.discount_type = tariff_in.discount_type or "STANDARD"
+    existing.discount_type = tariff_in.get_effective_discount_type()
     existing.discount_note = tariff_in.discount_note
     await db.commit()
     return {"message": "O'quvchining guruhdagi individual tarifi yangilandi!"}
