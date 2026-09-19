@@ -1260,6 +1260,68 @@ async def test_27_teacher_group_journal_and_homework_submissions():
         assert subs_res.status_code == 200
         assert isinstance(subs_res.json(), list)
 
+@pytest.mark.asyncio
+async def test_28_student_without_phone_and_parents_phones():
+    """28. Telefon raqamisiz o'quvchi qo'shish, otasi va onasi raqamlarini saqlash testi"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        admin_login = await ac.post("/api/v1/auth/login", json={"login_id": "777777", "password": "superadmin123"})
+        admin_token = admin_login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        # 1. Shaxsiy telefonisiz, faqat otasi va onasi raqami bilan o'quvchi yaratish
+        create_res = await ac.post("/api/v1/users/", json={
+            "full_name": "Jasur Bekov",
+            "phone": None,
+            "father_phone": "+998901112233",
+            "mother_phone": "+998904445566",
+            "role": "STUDENT"
+        }, headers=headers)
+        assert create_res.status_code == 200
+        st_data = create_res.json()
+        assert st_data["full_name"] == "Jasur Bekov"
+        assert st_data["phone"] is None
+        assert st_data["father_phone"] == "+998901112233"
+        assert st_data["mother_phone"] == "+998904445566"
+        assert st_data["parent_phone"] == "+998901112233" # fallback
+        assert "login_id" in st_data
+        st_id = st_data["id"]
+
+        # 2. O'quvchini tahrirlash (onasining raqamini yangilash)
+        update_res = await ac.put(f"/api/v1/users/{st_id}", json={
+            "mother_phone": "+998909990011"
+        }, headers=headers)
+        assert update_res.status_code == 200
+        assert update_res.json()["mother_phone"] == "+998909990011"
+
+        # 3. Lead yaratish (shaxsiy telefonisiz, ota-ona nomeri bilan) va uni ENROLLED qilish
+        lead_res = await ac.post("/api/v1/crm/leads", json={
+            "full_name": "Sardor Aliyev",
+            "phone": None,
+            "father_phone": "+998912223344",
+            "mother_phone": "+998915556677",
+            "notes": "Yangi kelgan o'quvchi arizasi"
+        })
+        assert lead_res.status_code == 200
+        lead_id = lead_res.json()["id"]
+
+        # 4. Lead holatini ENROLLED qilish va yangi o'quvchi avtomatik yaratilishini tekshirish
+        enroll_res = await ac.put(f"/api/v1/crm/leads/{lead_id}/status", json={
+            "status": "ENROLLED",
+            "notes": "Qabul qilindi va guruhga qo'shildi"
+        }, headers=headers)
+        assert enroll_res.status_code == 200
+        assert "new_login_id" in enroll_res.json()
+        new_login = enroll_res.json()["new_login_id"]
+
+        # Yaratilgan o'quvchini tekshirish
+        users_list = await ac.get("/api/v1/users/", headers=headers)
+        created_student = next((u for u in users_list.json() if u["login_id"] == new_login), None)
+        assert created_student is not None
+        assert created_student["full_name"] == "Sardor Aliyev"
+        assert created_student["father_phone"] == "+998912223344"
+        assert created_student["mother_phone"] == "+998915556677"
+
+
 
 
 

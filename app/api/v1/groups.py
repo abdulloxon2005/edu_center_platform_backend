@@ -106,6 +106,8 @@ async def get_group(
             "login_id": u.login_id,
             "full_name": u.full_name,
             "phone": u.phone,
+            "father_phone": u.father_phone,
+            "mother_phone": u.mother_phone,
             "parent_phone": u.parent_phone,
             "role": u.role,
             "student_status": u.student_status,

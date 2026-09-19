@@ -41,19 +41,27 @@ async def create_user(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
-    stmt = select(User).where(User.phone == user_in.phone)
-    result = await db.execute(stmt)
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Ushbu telefon raqamiga ega foydalanuvchi allaqachon mavjud!")
+    phone_val = user_in.phone.strip() if user_in.phone and user_in.phone.strip() else None
+    if phone_val:
+        stmt = select(User).where(User.phone == phone_val)
+        result = await db.execute(stmt)
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Ushbu telefon raqamiga ega foydalanuvchi allaqachon mavjud!")
 
     login_id = user_in.login_id or await generate_unique_login_id(db)
     temp_password = user_in.password or "123456"
 
+    father_phone_val = user_in.father_phone.strip() if user_in.father_phone and user_in.father_phone.strip() else None
+    mother_phone_val = user_in.mother_phone.strip() if user_in.mother_phone and user_in.mother_phone.strip() else None
+    parent_phone_val = user_in.parent_phone or father_phone_val or mother_phone_val
+
     db_user = User(
         login_id=login_id,
         full_name=user_in.full_name,
-        phone=user_in.phone,
-        parent_phone=user_in.parent_phone,
+        phone=phone_val,
+        father_phone=father_phone_val,
+        mother_phone=mother_phone_val,
+        parent_phone=parent_phone_val,
         hashed_password=get_password_hash(temp_password),
         is_password_changed=False,
         role=user_in.role,
@@ -112,15 +120,27 @@ async def update_user(
     update_data = user_in.model_dump(exclude_unset=True)
 
     # Telefon raqami o'zgartirilayotgan bo'lsa, takroriylikni tekshirish
-    if "phone" in update_data and update_data["phone"] and update_data["phone"] != user.phone:
-        existing_phone = await db.execute(
-            select(User).where(User.phone == update_data["phone"], User.id != user_id)
-        )
-        if existing_phone.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="Ushbu telefon raqamiga ega boshqa foydalanuvchi allaqachon mavjud!")
+    if "phone" in update_data:
+        phone_val = update_data["phone"].strip() if update_data["phone"] and isinstance(update_data["phone"], str) and update_data["phone"].strip() else None
+        update_data["phone"] = phone_val
+        if phone_val and phone_val != user.phone:
+            existing_phone = await db.execute(
+                select(User).where(User.phone == phone_val, User.id != user_id)
+            )
+            if existing_phone.scalar_one_or_none():
+                raise HTTPException(status_code=400, detail="Ushbu telefon raqamiga ega boshqa foydalanuvchi allaqachon mavjud!")
+
+    if "father_phone" in update_data and isinstance(update_data["father_phone"], str):
+        update_data["father_phone"] = update_data["father_phone"].strip() or None
+    if "mother_phone" in update_data and isinstance(update_data["mother_phone"], str):
+        update_data["mother_phone"] = update_data["mother_phone"].strip() or None
 
     for field, value in update_data.items():
         setattr(user, field, value)
+
+    # parent_phone ni ham sinxronlashtirish
+    if not user.parent_phone:
+        user.parent_phone = user.father_phone or user.mother_phone
 
     await db.commit()
     await db.refresh(user)

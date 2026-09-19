@@ -35,7 +35,9 @@ class TelegramLoginRequest(BaseModel):
 # User Schemas
 class UserBase(BaseModel):
     full_name: str
-    phone: str
+    phone: Optional[str] = None
+    father_phone: Optional[str] = None
+    mother_phone: Optional[str] = None
     parent_phone: Optional[str] = None
     role: UserRole = UserRole.STUDENT
     student_status: StudentStatusEnum = StudentStatusEnum.ACTIVE
@@ -48,6 +50,8 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    father_phone: Optional[str] = None
+    mother_phone: Optional[str] = None
     parent_phone: Optional[str] = None
     role: Optional[UserRole] = None
     student_status: Optional[StudentStatusEnum] = None
@@ -293,7 +297,9 @@ class ExpenseResponse(BaseModel):
 # Lead Schemas
 class LeadCreate(BaseModel):
     full_name: str
-    phone: str
+    phone: Optional[str] = None
+    father_phone: Optional[str] = None
+    mother_phone: Optional[str] = None
     course_id: Optional[int] = None
     notes: Optional[str] = None
     telegram_user_id: Optional[str] = None
@@ -305,7 +311,9 @@ class LeadStatusUpdate(BaseModel):
 class LeadResponse(BaseModel):
     id: int
     full_name: str
-    phone: str
+    phone: Optional[str] = None
+    father_phone: Optional[str] = None
+    mother_phone: Optional[str] = None
     course_id: Optional[int] = None
     status: LeadStatus
     telegram_user_id: Optional[str] = None
@@ -401,7 +409,10 @@ class StudentBillingResponse(BaseModel):
 class DebtorResponse(BaseModel):
     student_id: int
     student_name: str
-    phone: str
+    phone: Optional[str] = None
+    father_phone: Optional[str] = None
+    mother_phone: Optional[str] = None
+    parent_phone: Optional[str] = None
     login_id: str
     total_debt: float
     unpaid_months: List[str]
@@ -433,7 +444,10 @@ class StudentBillingInfoResponse(BaseModel):
     student_id: int
     student_name: str
     login_id: str
-    phone: str
+    phone: Optional[str] = None
+    father_phone: Optional[str] = None
+    mother_phone: Optional[str] = None
+    parent_phone: Optional[str] = None
     telegram_chat_id: Optional[str] = None
     groups: List[StudentGroupCourseInfo]
     total_monthly_fee: float

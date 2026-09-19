@@ -17,7 +17,15 @@ async def create_lead(
     lead_in: LeadCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    lead = Lead(**lead_in.model_dump())
+    lead_dict = lead_in.model_dump()
+    if lead_dict.get("phone"):
+        lead_dict["phone"] = lead_dict["phone"].strip() or None
+    if lead_dict.get("father_phone"):
+        lead_dict["father_phone"] = lead_dict["father_phone"].strip() or None
+    if lead_dict.get("mother_phone"):
+        lead_dict["mother_phone"] = lead_dict["mother_phone"].strip() or None
+
+    lead = Lead(**lead_dict)
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
@@ -66,14 +74,22 @@ async def update_lead_status(
     new_login_id = None
     temp_password = None
     if status_in.status == LeadStatus.ENROLLED:
-        existing_user_res = await db.execute(select(User).where(User.phone == lead.phone))
-        if not existing_user_res.scalar_one_or_none():
+        should_create = True
+        if lead.phone:
+            existing_user_res = await db.execute(select(User).where(User.phone == lead.phone))
+            if existing_user_res.scalar_one_or_none():
+                should_create = False
+        if should_create:
             new_login_id = await generate_unique_login_id(db)
             temp_password = generate_secure_temp_password()
+            parent_phone_val = lead.father_phone or lead.mother_phone
             new_student = User(
                 login_id=new_login_id,
                 full_name=lead.full_name,
                 phone=lead.phone,
+                father_phone=lead.father_phone,
+                mother_phone=lead.mother_phone,
+                parent_phone=parent_phone_val,
                 hashed_password=get_password_hash(temp_password),
                 is_password_changed=False,
                 role=UserRole.STUDENT,
