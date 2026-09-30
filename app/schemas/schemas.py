@@ -57,6 +57,7 @@ class UserUpdate(BaseModel):
     student_status: Optional[StudentStatusEnum] = None
     telegram_chat_id: Optional[str] = None
     is_active: Optional[bool] = None
+    password: Optional[str] = None  # Admin parolni tiklash uchun
 
 class UserResponse(UserBase):
     id: int

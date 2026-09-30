@@ -119,6 +119,13 @@ async def update_user(
 
     update_data = user_in.model_dump(exclude_unset=True)
 
+    # Parolni alohida ishlov berish
+    new_password = update_data.pop("password", None)
+    if new_password:
+        user.hashed_password = get_password_hash(new_password)
+        user.is_password_changed = False
+        logger.info(f"Admin tomonidan foydalanuvchi paroli yangilandi: {user.login_id}")
+
     # Telefon raqami o'zgartirilayotgan bo'lsa, takroriylikni tekshirish
     if "phone" in update_data:
         phone_val = update_data["phone"].strip() if update_data["phone"] and isinstance(update_data["phone"], str) and update_data["phone"].strip() else None

@@ -22,8 +22,10 @@ from app.schemas.schemas import (
 )
 from app.api.deps import get_current_admin, get_current_user
 from app.services.notification import send_telegram_notification
+from app.core.formatters import format_month_uz, format_payment_method_uz
 
 router = APIRouter()
+
 
 
 def calculate_student_effective_fee(gs: GroupStudent, crs: Course) -> float:
@@ -92,6 +94,17 @@ async def sync_student_billing(db: AsyncSession, student_id: int, month_for: str
     else:
         primary_billing = billings[0]
         total_due = sum(b.amount_due for b in billings)
+
+        # Agar narx o'zgargan bo'lsa va to'lov to'liq to'lanmagan bo'lsa, amount_due ni yangilash
+        if total_monthly_fee > 0 and total_due != total_monthly_fee:
+            if total_paid_for_month < total_due:
+                # To'lov to'liq to'lanmagan — narxni yangilash
+                primary_billing.amount_due = total_monthly_fee
+                total_due = total_monthly_fee
+                # Qo'shimcha billing yozuvlari bo'lsa ularni nolga qo'yish
+                for b in billings[1:]:
+                    b.amount_due = 0.0
+
         if total_due <= 0 and total_monthly_fee > 0:
             total_due = total_monthly_fee
 
@@ -356,7 +369,7 @@ async def record_payment(
     )
     res_groups = await db.execute(stmt)
     active_rows = res_groups.all()
-    total_monthly_fee = sum(crs.price_monthly for _, _, crs in active_rows)
+    total_monthly_fee = sum(calculate_student_effective_fee(gs, crs) for gs, _, crs in active_rows)
     course_names = ", ".join([f"{crs.title} ({grp.name})" for _, grp, crs in active_rows]) or "Kurs"
 
     # Yangi to'lovni bazaga kiritish
@@ -404,8 +417,8 @@ async def record_payment(
         f"📚 Kurs(lar): <b>{course_names}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"💵 <b>To'langan summa: {payment.amount:,.0f} so'm</b>\n"
-        f"📅 To'lov oyi: <b>{payment.month_for}</b>\n"
-        f"💳 To'lov turi: <b>{payment.payment_method}</b>\n"
+        f"📅 To'lov oyi: <b>{format_month_uz(payment.month_for)}</b>\n"
+        f"💳 To'lov turi: <b>{format_payment_method_uz(payment.payment_method)}</b>\n"
         f"🕒 Sana va vaqt: <b>{payment_time_str}</b>\n"
         f"{note_line}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -693,11 +706,12 @@ async def execute_monthly_billing_and_notify(db: AsyncSession, target_month: Opt
             )
             billing = exist_res.scalar_one_or_none()
             if not billing:
+                effective_fee = calculate_student_effective_fee(gs, course)
                 billing = StudentBilling(
                     student_id=gs.student_id,
                     group_id=grp.id,
                     month_for=target_month,
-                    amount_due=course.price_monthly,
+                    amount_due=effective_fee,
                     amount_paid=0.0,
                     is_paid=False,
                     due_date=date.today()
@@ -710,9 +724,9 @@ async def execute_monthly_billing_and_notify(db: AsyncSession, target_month: Opt
                     msg = (
                         f"🔔 <b>YANGI OY UCHUN TO'LOV BILDIRISHNOMASI</b> 📅\n\n"
                         f"Assalomu alaykum, <b>{student.full_name}</b>!\n"
-                        f"<b>{target_month}</b> oyi uchun to'lov hisob-kitobi shakllantirildi:\n\n"
+                        f"<b>{format_month_uz(target_month)}</b> oyi uchun to'lov hisob-kitobi shakllantirildi:\n\n"
                         f"📚 Kurs: <b>{course.title}</b> ({grp.name})\n"
-                        f"💵 Oylik to'lov summasi: <b>{course.price_monthly:,.0f} so'm</b>\n\n"
+                        f"💵 Oylik to'lov summasi: <b>{effective_fee:,.0f} so'm</b>\n\n"
                         f"⚠️ <i>Iltimos, darslar uzluksizligi uchun to'lovni oyning 5-sanasiga qadar amalga oshiring.</i>"
                     )
                     sent = await send_telegram_notification(student.telegram_chat_id, msg)
@@ -871,8 +885,8 @@ async def get_payment_receipt_pdf(
     p.drawString(100, 690, f"Sana: {payment.created_at.strftime('%Y-%m-%d %H:%M')}")
     p.drawString(100, 660, f"O'quvchi: {student_name} (ID: {student_id_code})")
     p.drawString(100, 640, f"Summa: {payment.amount:,.0f} so'm")
-    p.drawString(100, 620, f"To'lov turi: {payment.payment_method}")
-    p.drawString(100, 600, f"Oy uchun: {payment.month_for}")
+    p.drawString(100, 620, f"To'lov turi: {format_payment_method_uz(payment.payment_method)}")
+    p.drawString(100, 600, f"Oy uchun: {format_month_uz(payment.month_for)}")
     if payment.note:
         p.drawString(100, 580, f"Izoh: {payment.note}")
 

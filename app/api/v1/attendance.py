@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 
 from app.core.database import get_db
-from app.models.models import Lesson, Attendance, AttendanceStatus, User, Group, Course, Room, GroupStudent, UserRole
+from app.models.models import Lesson, Attendance, AttendanceStatus, User, Group, Course, Room, GroupStudent, UserRole, ParentStudent
 from app.schemas.schemas import LessonCreate, LessonResponse, AttendanceBulkCreate, AttendanceResponse
 from app.api.deps import get_current_user, get_current_admin
 from app.services.notification import send_telegram_notification
@@ -113,12 +113,16 @@ async def mark_attendance(
             )
         )
         att = existing.scalar_one_or_none()
+        status_changed = False
         if att:
-            att.status = item.status
+            if att.status != item.status:
+                status_changed = True
+                att.status = item.status
             if item.note is not None:
                 att.note = item.note
             updated_records.append(att)
         else:
+            status_changed = True
             att = Attendance(
                 lesson_id=attendance_in.lesson_id,
                 student_id=item.student_id,
@@ -128,29 +132,45 @@ async def mark_attendance(
             db.add(att)
             created_records.append(att)
 
-        # Telegram bildirishnoma
-        student_res = await db.execute(select(User).where(User.id == item.student_id))
-        student = student_res.scalar_one_or_none()
+        # Telegram bildirishnoma - FAQAT birinchi marta belgilanganda yoki status o'zgarganda yuboriladi!
+        # Agar status o'zgarmagan bo'lsa (tugma qayta-qayta bosilganda), xabar takroran yuborilmaydi!
+        if status_changed:
+            student_res = await db.execute(select(User).where(User.id == item.student_id))
+            student = student_res.scalar_one_or_none()
 
-        if student and student.telegram_chat_id:
-            if item.status == AttendanceStatus.PRESENT:
-                status_text = "Farzandingiz darsga KELDI ✅"
-            elif item.status == AttendanceStatus.LATE:
-                status_text = "Farzandingiz darsga KECHIKIB KELDI ⚠️"
-            elif item.status == AttendanceStatus.ABSENT:
-                status_text = "Farzandingiz darsga KELMADI ❌"
-            else:
-                status_text = "Farzandingiz darsda (Sababli 📋)"
+            if student:
+                if item.status == AttendanceStatus.PRESENT:
+                    status_text = "Farzandingiz darsga KELDI ✅"
+                elif item.status == AttendanceStatus.LATE:
+                    status_text = "Farzandingiz darsga KECHIKIB KELDI ⚠️"
+                elif item.status == AttendanceStatus.ABSENT:
+                    status_text = "Farzandingiz darsga KELMADI ❌"
+                else:
+                    status_text = "Farzandingiz darsda (Sababli 📋)"
 
-            note_line = f"\n💬 Izoh: {item.note}" if item.note else ""
-            msg = (
-                f"🔔 <b>O'QUV MARKAZI DAVOMAT XABARI</b>\n\n"
-                f"👤 Farzandingiz: <b>{student.full_name}</b> (ID: {student.login_id})\n"
-                f"📅 Sana: {lesson.lesson_date}\n"
-                f"📌 Holati: <b>{status_text}</b>"
-                f"{note_line}"
-            )
-            await send_telegram_notification(student.telegram_chat_id, msg)
+                note_line = f"\n💬 Izoh: {item.note}" if item.note else ""
+                msg = (
+                    f"🔔 <b>O'QUV MARKAZI DAVOMAT XABARI</b>\n\n"
+                    f"👤 Farzandingiz: <b>{student.full_name}</b> (ID: {student.login_id})\n"
+                    f"📅 Sana: {lesson.lesson_date}\n"
+                    f"📌 Holati: <b>{status_text}</b>"
+                    f"{note_line}"
+                )
+                if student.telegram_chat_id:
+                    await send_telegram_notification(student.telegram_chat_id, msg)
+
+                # Bog'langan ota-onaga ham xabarnoma yuborish
+                try:
+                    parent_res = await db.execute(
+                        select(User).join(ParentStudent, ParentStudent.parent_id == User.id)
+                        .where(ParentStudent.student_id == student.id, User.telegram_chat_id.isnot(None))
+                    )
+                    parents = parent_res.scalars().all()
+                    for p in parents:
+                        if p.telegram_chat_id and p.telegram_chat_id != student.telegram_chat_id:
+                            await send_telegram_notification(p.telegram_chat_id, msg)
+                except Exception:
+                    pass
 
     await db.commit()
     msg = f"{len(created_records) + len(updated_records)} ta o'quvchi davomati saqlandi!"

@@ -77,6 +77,7 @@ async def click_webhook(
 
         # Telegramga rasmiy to'lov chekini yuborish
         from app.services.notification import send_telegram_notification
+        from app.core.formatters import format_month_uz
         payment_time_str = payment.created_at.strftime('%Y-%m-%d %H:%M') if hasattr(payment, 'created_at') and payment.created_at else date.today().strftime('%Y-%m-%d')
         tg_msg = (
             f"🧾 <b>RASMIY TO'LOV CHEKI #{payment.id} (CLICK)</b>\n"
@@ -85,8 +86,8 @@ async def click_webhook(
             f"👤 O'quvchi: <b>{student.full_name}</b> (ID: <code>{student.login_id}</code>)\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💵 <b>To'langan summa: {payment.amount:,.0f} so'm</b>\n"
-            f"💳 To'lov turi: <b>CLICK (Tranzaksiya: {click_trans_id})</b>\n"
-            f"📅 To'lov oyi: <b>{payment.month_for}</b>\n"
+            f"💳 To'lov turi: <b>Click (Tranzaksiya: {click_trans_id})</b>\n"
+            f"📅 To'lov oyi: <b>{format_month_uz(payment.month_for)}</b>\n"
             f"🕒 Sana va vaqt: <b>{payment_time_str}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"✅ <i>To'lovingiz muvaffaqiyatli qabul qilindi. Ta'lim Plus'ni tanlaganingiz uchun tashakkur!</i>"
