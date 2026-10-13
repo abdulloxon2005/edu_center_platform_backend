@@ -71,15 +71,25 @@ async def update_lead_status(
     if status_in.notes:
         lead.notes = status_in.notes
 
-    new_login_id = None
+    target_student_id = None
+    target_login_id = None
     temp_password = None
+
     if status_in.status == LeadStatus.ENROLLED:
-        should_create = True
+        existing_user = None
         if lead.phone:
             existing_user_res = await db.execute(select(User).where(User.phone == lead.phone))
-            if existing_user_res.scalar_one_or_none():
-                should_create = False
-        if should_create:
+            existing_user = existing_user_res.scalar_one_or_none()
+
+        if existing_user:
+            if existing_user.role != UserRole.STUDENT:
+                existing_user.role = UserRole.STUDENT
+            existing_user.is_active = True
+            if not existing_user.full_name and lead.full_name:
+                existing_user.full_name = lead.full_name
+            target_student_id = existing_user.id
+            target_login_id = existing_user.login_id
+        else:
             new_login_id = await generate_unique_login_id(db)
             temp_password = generate_secure_temp_password()
             parent_phone_val = lead.father_phone or lead.mother_phone
@@ -96,13 +106,24 @@ async def update_lead_status(
                 telegram_chat_id=lead.telegram_user_id
             )
             db.add(new_student)
+            await db.flush()
+            target_student_id = new_student.id
+            target_login_id = new_login_id
 
     await db.commit()
-    result = {"message": "Lead holati yangilandi!"}
-    if new_login_id:
-        result["message"] = f"Lead holati yangilandi va O'quvchi akkounti yaratildi!"
-        result["new_login_id"] = new_login_id
-        result["temp_password"] = temp_password
+    result = {
+        "message": "Lead holati yangilandi!",
+        "lead_id": lead.id,
+        "status": lead.status.value if hasattr(lead.status, "value") else str(lead.status)
+    }
+    if target_student_id:
+        result["student_id"] = target_student_id
+        result["new_login_id"] = target_login_id
+        if temp_password:
+            result["temp_password"] = temp_password
+            result["message"] = f"Lead qabul qilindi va yangi O'quvchi akkounti yaratildi (ID: {target_login_id})!"
+        else:
+            result["message"] = f"Lead qabul qilindi va mavjud o'quvchi profili biriktirildi (ID: {target_login_id})!"
     return result
 
 @router.delete("/leads/{lead_id}")
