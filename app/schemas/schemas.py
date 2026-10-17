@@ -165,7 +165,7 @@ class GroupDetailResponse(GroupResponse):
 # Lesson & Attendance Schemas
 class LessonCreate(BaseModel):
     group_id: int
-    lesson_date: date
+    lesson_date: Optional[date] = None
     topic: Optional[str] = None
     room_id: Optional[int] = None
 
@@ -267,6 +267,8 @@ class PaymentUpdate(BaseModel):
 class PaymentResponse(BaseModel):
     id: int
     student_id: int
+    student_name: Optional[str] = None
+    student_login_id: Optional[str] = None
     amount: float
     payment_method: PaymentMethod
     transaction_id: Optional[str] = None
@@ -282,6 +284,13 @@ class ExpenseCreate(BaseModel):
     amount: float
     category: str
     date: date
+    description: Optional[str] = None
+
+class ExpenseUpdate(BaseModel):
+    title: Optional[str] = None
+    amount: Optional[float] = None
+    category: Optional[str] = None
+    date: Optional[date] = None
     description: Optional[str] = None
 
 class ExpenseResponse(BaseModel):

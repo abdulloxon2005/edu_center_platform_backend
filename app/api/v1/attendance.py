@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,12 +29,13 @@ async def create_lesson(
         raise HTTPException(status_code=404, detail="Guruh topilmadi!")
 
     room_id = lesson_in.room_id or group.room_id
+    effective_lesson_date = lesson_in.lesson_date or date.today()
 
     # Guruh va sana bo'yicha dars mavjudligini tekshiramiz
     existing_res = await db.execute(
         select(Lesson).where(
             Lesson.group_id == lesson_in.group_id,
-            Lesson.lesson_date == lesson_in.lesson_date
+            Lesson.lesson_date == effective_lesson_date
         )
     )
     existing_lesson = existing_res.scalar_one_or_none()
@@ -48,7 +50,7 @@ async def create_lesson(
         group_id=lesson_in.group_id,
         teacher_id=group.teacher_id if current_user.role == UserRole.ADMIN else current_user.id,
         room_id=room_id,
-        lesson_date=lesson_in.lesson_date,
+        lesson_date=effective_lesson_date,
         topic=lesson_in.topic
     )
     db.add(lesson)

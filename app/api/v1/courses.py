@@ -11,6 +11,7 @@ from app.schemas.schemas import (
     CourseMaterialCreate, CourseMaterialResponse
 )
 from app.api.deps import get_current_admin, get_current_user
+from app.models.models import UserRole as _UserRole
 
 router = APIRouter()
 
@@ -111,6 +112,8 @@ async def get_course_materials(db: AsyncSession = Depends(get_db), current_user:
 
 @router.post("/materials/", response_model=CourseMaterialResponse)
 async def create_course_material(material_in: CourseMaterialCreate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role not in (_UserRole.ADMIN, _UserRole.TEACHER):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Faqat admin yoki o'qituvchilar material yuklashi mumkin!")
     new_material = CourseMaterial(**material_in.model_dump(), uploaded_by_id=current_user.id)
     db.add(new_material)
     await db.commit()

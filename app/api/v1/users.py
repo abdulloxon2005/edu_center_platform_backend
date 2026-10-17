@@ -1,7 +1,12 @@
 import random
 import logging
+from io import BytesIO
+from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -9,7 +14,8 @@ from app.core.database import get_db
 from app.core.security import get_password_hash
 from app.models.models import (
     User, UserRole, StudentStatusEnum, StudentFreeze, GroupTransferLog,
-    ParentStudent, TelegramNotificationLog, GroupStudent, CoinTransaction
+    ParentStudent, TelegramNotificationLog, GroupStudent, CoinTransaction,
+    Group, Course, Room, Payment, Attendance, AttendanceStatus, Lesson
 )
 from app.schemas.schemas import (
     UserCreate, UserUpdate, UserResponse,
@@ -72,8 +78,6 @@ async def create_user(
     await db.refresh(db_user)
     logger.info(f"Yangi foydalanuvchi yaratildi: {db_user.login_id} ({db_user.role})")
     return db_user
-
-from app.models.models import User, UserRole, StudentFreeze, GroupTransferLog, ParentStudent, TelegramNotificationLog, GroupStudent, CoinTransaction
 
 @router.get("/", response_model=List[UserResponse])
 async def list_users(
@@ -282,3 +286,244 @@ async def get_notifications(
 ):
     result = await db.execute(select(TelegramNotificationLog))
     return result.scalars().all()
+
+
+@router.get("/{user_id}/full-detail")
+async def get_student_full_detail(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    user_res = await db.execute(select(User).where(User.id == user_id))
+    user = user_res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi!")
+
+    # 1. Enrolled groups
+    gs_stmt = (
+        select(GroupStudent, Group, Course, User.full_name.label("teacher_name"), Room.name.label("room_name"))
+        .join(Group, GroupStudent.group_id == Group.id)
+        .outerjoin(Course, Group.course_id == Course.id)
+        .outerjoin(User, Group.teacher_id == User.id)
+        .outerjoin(Room, Group.room_id == Room.id)
+        .where(GroupStudent.student_id == user_id)
+    )
+    gs_res = await db.execute(gs_stmt)
+    groups_data = []
+    for gs, g, crs, t_name, r_name in gs_res.all():
+        groups_data.append({
+            "group_id": g.id,
+            "group_name": g.name,
+            "course_title": crs.title if crs else "Fan biriktirilmagan",
+            "teacher_name": t_name or "O'qituvchi tayinlanmagan",
+            "days_of_week": g.days_of_week,
+            "start_time": g.start_time,
+            "end_time": g.end_time,
+            "room_name": r_name or "Xona belgilanmagan",
+            "tariff_type": gs.discount_type or "STANDARD",
+            "custom_price": gs.custom_price,
+            "discount_note": gs.discount_note,
+            "joined_at": gs.joined_at.strftime("%Y-%m-%d") if getattr(gs, 'joined_at', None) else None,
+            "is_active": g.is_active
+        })
+
+    # 2. Payments
+    pay_res = await db.execute(
+        select(Payment).where(Payment.student_id == user_id).order_by(Payment.created_at.desc())
+    )
+    payments = pay_res.scalars().all()
+    payments_data = [
+        {
+            "id": p.id,
+            "amount": p.amount,
+            "month_for": p.month_for,
+            "payment_method": p.payment_method,
+            "discount_amount": p.discount_amount,
+            "note": p.note,
+            "created_at": p.created_at.strftime("%Y-%m-%d %H:%M") if p.created_at else None
+        }
+        for p in payments
+    ]
+
+    # 3. Attendance records
+    att_stmt = (
+        select(Attendance, Lesson.lesson_date, Lesson.topic, Group.name.label("group_name"))
+        .join(Lesson, Attendance.lesson_id == Lesson.id)
+        .join(Group, Lesson.group_id == Group.id)
+        .where(Attendance.student_id == user_id)
+        .order_by(Lesson.lesson_date.desc())
+    )
+    att_res = await db.execute(att_stmt)
+    att_rows = att_res.all()
+
+    total_att = len(att_rows)
+    present_cnt = sum(1 for a, _, _, _ in att_rows if a.status == AttendanceStatus.PRESENT)
+    late_cnt = sum(1 for a, _, _, _ in att_rows if a.status == AttendanceStatus.LATE)
+    absent_cnt = sum(1 for a, _, _, _ in att_rows if a.status == AttendanceStatus.ABSENT)
+    excused_cnt = sum(1 for a, _, _, _ in att_rows if a.status == AttendanceStatus.EXCUSED)
+    att_rate = round(((present_cnt + late_cnt * 0.75) / total_att) * 100) if total_att > 0 else 0
+
+    recent_attendances = [
+        {
+            "id": a.id,
+            "date": str(l_date),
+            "topic": topic,
+            "group_name": grp_name,
+            "status": a.status.value if hasattr(a.status, "value") else str(a.status),
+            "note": a.note
+        }
+        for a, l_date, topic, grp_name in att_rows[:15]
+    ]
+
+    return {
+        "student": {
+            "id": user.id,
+            "full_name": user.full_name,
+            "login_id": user.login_id,
+            "phone": user.phone,
+            "father_phone": user.father_phone,
+            "mother_phone": user.mother_phone,
+            "parent_phone": user.parent_phone,
+            "role": user.role,
+            "student_status": user.student_status,
+            "is_active": user.is_active,
+            "telegram_chat_id": user.telegram_chat_id,
+            "created_at": user.created_at.strftime("%Y-%m-%d %H:%M") if user.created_at else None
+        },
+        "groups": groups_data,
+        "payments": payments_data,
+        "attendance_summary": {
+            "total": total_att,
+            "present": present_cnt,
+            "late": late_cnt,
+            "absent": absent_cnt,
+            "excused": excused_cnt,
+            "rate": att_rate
+        },
+        "recent_attendances": recent_attendances
+    }
+
+
+@router.get("/{user_id}/full-detail/pdf")
+async def get_student_full_detail_pdf(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    detail = await get_student_full_detail(user_id=user_id, db=db, admin=admin)
+    st = detail["student"]
+    groups = detail["groups"]
+    payments = detail["payments"]
+    att = detail["attendance_summary"]
+
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    # Header
+    p.setFillColorRGB(0.12, 0.23, 0.54)
+    p.setFont("Helvetica-Bold", 18)
+    p.drawString(50, height - 50, "Ta'lim Plus O'quv Markazi")
+    p.setFont("Helvetica", 11)
+    p.setFillColorRGB(0.4, 0.45, 0.55)
+    p.drawString(50, height - 68, "O'quvchi to'liq ma'lumotnomasi va portfoliyasi")
+
+    p.setStrokeColorRGB(0.8, 0.85, 0.95)
+    p.setLineWidth(1)
+    p.line(50, height - 76, width - 50, height - 76)
+
+    # Student Info Card
+    y = height - 105
+    p.setFont("Helvetica-Bold", 14)
+    p.setFillColorRGB(0.06, 0.09, 0.16)
+    p.drawString(50, y, f"{st['full_name']}")
+    p.setFont("Helvetica", 11)
+    p.drawString(width - 200, y, f"Login ID: #{st['login_id']}")
+
+    y -= 22
+    p.setFont("Helvetica", 10)
+    p.setFillColorRGB(0.3, 0.35, 0.45)
+    phone_info = st['phone'] or 'Mavjud emas'
+    parent_info = st['parent_phone'] or st['father_phone'] or st['mother_phone'] or 'Mavjud emas'
+    p.drawString(50, y, f"Telefon: {phone_info} | Ota-onasi: {parent_info}")
+    p.drawString(width - 200, y, f"Holati: {st['student_status'] or 'ACTIVE'}")
+
+    y -= 18
+    p.drawString(50, y, f"Ro'yxatdan o'tgan sana: {st['created_at'] or '-'}")
+
+    # Enrolled Groups Section
+    y -= 30
+    p.setFillColorRGB(0.15, 0.39, 0.92)
+    p.setFont("Helvetica-Bold", 12)
+    p.drawString(50, y, "A'ZO BO'LGAN GURUHLARI:")
+
+    y -= 18
+    p.setFont("Helvetica", 10)
+    p.setFillColorRGB(0.1, 0.15, 0.25)
+    if not groups:
+        p.drawString(60, y, "Hozirda biriktirilgan guruhlar mavjud emas.")
+        y -= 16
+    else:
+        for g in groups:
+            p.setFont("Helvetica-Bold", 10)
+            p.drawString(60, y, f"- {g['group_name']} ({g['course_title']})")
+            p.setFont("Helvetica", 9)
+            p.drawString(240, y, f"O'qituvchi: {g['teacher_name']} | Xona: {g['room_name']}")
+            y -= 14
+            p.drawString(70, y, f"Jadval: {g['days_of_week']} ({g['start_time']} - {g['end_time']}) | Kelgan: {g.get('joined_at') or '-'} | Tarif: {g['tariff_type']}")
+            y -= 18
+
+    # Attendance Summary Section
+    y -= 15
+    p.setFillColorRGB(0.15, 0.39, 0.92)
+    p.setFont("Helvetica-Bold", 12)
+    p.drawString(50, y, "DAVOMAT KO'RSATKICHLARI:")
+
+    y -= 18
+    p.setFont("Helvetica", 10)
+    p.setFillColorRGB(0.1, 0.15, 0.25)
+    p.drawString(60, y, f"Jami darslar: {att['total']} ta | Keldi: {att['present']} | Kech qoldi: {att['late']} | Kelmadi: {att['absent']} | Sababli: {att['excused']}")
+    y -= 16
+    p.setFont("Helvetica-Bold", 10)
+    p.drawString(60, y, f"Davomat darajasi: {att['rate']}%")
+
+    # Payment History Section
+    y -= 30
+    p.setFillColorRGB(0.15, 0.39, 0.92)
+    p.setFont("Helvetica-Bold", 12)
+    p.drawString(50, y, "TO'LOVLAR TARIXI (Oxirgilari):")
+
+    y -= 18
+    p.setFont("Helvetica", 10)
+    p.setFillColorRGB(0.1, 0.15, 0.25)
+    if not payments:
+        p.drawString(60, y, "To'lovlar yozuvi mavjud emas.")
+        y -= 16
+    else:
+        for p_item in payments[:8]:
+            p.setFont("Helvetica-Bold", 9)
+            amt_str = f"{p_item['amount']:,.0f}" if p_item['amount'] is not None else "0"
+            p.drawString(60, y, f"#{p_item['id']} - {amt_str} UZS")
+            p.setFont("Helvetica", 9)
+            p.drawString(200, y, f"Oy: {p_item['month_for'] or '-'} | Usul: {p_item['payment_method']} | Sana: {p_item['created_at']}")
+            y -= 15
+
+    # Footer
+    p.setStrokeColorRGB(0.8, 0.85, 0.95)
+    p.setLineWidth(1)
+    p.line(50, 60, width - 50, 60)
+
+    p.setFont("Helvetica-Oblique", 9)
+    p.setFillColorRGB(0.5, 0.55, 0.65)
+    p.drawString(50, 45, "Ta'lim Plus Elektron Boshqaruv Tizimi tomonidan avtomatik shakllantirildi.")
+    p.drawRightString(width - 50, 45, f"Chop etilgan sana: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}")
+
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=student_{user_id}.pdf"}
+    )

@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 import docx
-import openpyxl
 
 from app.core.database import get_db
 from app.models.models import (
@@ -20,7 +19,7 @@ from app.schemas.schemas import (
     QuestionCreate, QuestionResponse, QuestionImportTextRequest,
     LeaderboardItem, StudentAnalyticsResponse
 )
-from app.api.deps import get_current_teacher, get_current_user, get_current_admin
+from app.api.deps import get_current_teacher, get_current_user
 
 router = APIRouter()
 

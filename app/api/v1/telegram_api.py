@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 
 from app.core.database import get_db
+from app.api.v1.finance import calculate_student_effective_fee
 from app.models.models import (
     User, UserRole, ParentStudent, GroupStudent, Group, Course,
     Payment, StudentBilling, Lesson, Attendance, AttendanceStatus
@@ -174,7 +175,7 @@ async def get_student_payments(
         )
     )
     rows = group_res.all()
-    monthly_fee = sum(c.price_monthly for _, _, c in rows)
+    monthly_fee = sum(calculate_student_effective_fee(gs, c) for gs, _, c in rows)
 
     # Joriy oy to'langan summa
     month_pay_res = await db.execute(

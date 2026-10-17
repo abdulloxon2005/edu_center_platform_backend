@@ -3,7 +3,7 @@ from datetime import datetime, date, time, timedelta
 from io import BytesIO
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, desc
@@ -21,8 +21,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from app.core.database import get_db
 from app.models.models import (
     Payment, Expense, User, UserRole, Group, GroupStudent, Course,
-    TeacherPayroll, StudentBilling, Attendance, AttendanceStatus,
-    Lesson, Exam, ExamResult, Lead, LeadStatus
+    TeacherPayroll, Attendance, AttendanceStatus,
+    Lesson, Exam, ExamResult
 )
 from app.api.deps import get_current_admin
 

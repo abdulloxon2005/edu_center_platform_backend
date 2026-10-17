@@ -14,7 +14,7 @@ from app.models.models import (
     TeacherPayroll, StudentBilling, Invoice, ParentStudent
 )
 from app.schemas.schemas import (
-    PaymentCreate, PaymentResponse, PaymentUpdate, ExpenseCreate, ExpenseResponse,
+    PaymentCreate, PaymentResponse, PaymentUpdate, ExpenseCreate, ExpenseUpdate, ExpenseResponse,
     PayrollCalculateRequest, PayrollPayRequest, TeacherPayrollResponse,
     StudentBillingGenerateRequest, StudentBillingResponse, DebtorResponse,
     InvoiceCreate, InvoiceResponse, StudentBillingInfoResponse,
@@ -526,11 +526,39 @@ async def delete_payment(
 
 @router.get("/payments", response_model=List[PaymentResponse])
 async def list_payments(
+    search: Optional[str] = None,
+    month_for: Optional[str] = None,
+    payment_method: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
-    res = await db.execute(select(Payment).order_by(Payment.created_at.desc()))
-    return res.scalars().all()
+    stmt = (
+        select(Payment, User.full_name, User.login_id)
+        .outerjoin(User, Payment.student_id == User.id)
+    )
+    if month_for:
+        stmt = stmt.where(Payment.month_for == month_for)
+    if payment_method:
+        stmt = stmt.where(Payment.payment_method == payment_method)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(
+            (User.full_name.ilike(term)) |
+            (User.login_id.ilike(term)) |
+            (Payment.note.ilike(term)) |
+            (Payment.month_for.ilike(term))
+        )
+    stmt = stmt.order_by(Payment.created_at.desc())
+    res = await db.execute(stmt)
+    rows = res.all()
+
+    payment_responses = []
+    for p, full_name, login_id in rows:
+        resp = PaymentResponse.model_validate(p)
+        resp.student_name = full_name or "Noma'lum"
+        resp.student_login_id = login_id or ""
+        payment_responses.append(resp)
+    return payment_responses
 
 
 @router.get("/student/{student_id}/payments", response_model=List[PaymentResponse])
@@ -539,8 +567,21 @@ async def get_student_payments(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    res = await db.execute(select(Payment).where(Payment.student_id == student_id).order_by(Payment.created_at.desc()))
-    return res.scalars().all()
+    stmt = (
+        select(Payment, User.full_name, User.login_id)
+        .outerjoin(User, Payment.student_id == User.id)
+        .where(Payment.student_id == student_id)
+        .order_by(Payment.created_at.desc())
+    )
+    res = await db.execute(stmt)
+    rows = res.all()
+    results = []
+    for p, full_name, login_id in rows:
+        resp = PaymentResponse.model_validate(p)
+        resp.student_name = full_name or ""
+        resp.student_login_id = login_id or ""
+        results.append(resp)
+    return results
 
 
 @router.post("/expenses", response_model=ExpenseResponse)
@@ -561,8 +602,45 @@ async def list_expenses(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
-    res = await db.execute(select(Expense).order_by(Expense.date.desc()))
+    res = await db.execute(select(Expense).order_by(Expense.date.desc(), Expense.id.desc()))
     return res.scalars().all()
+
+
+@router.put("/expenses/{expense_id}", response_model=ExpenseResponse)
+async def update_expense(
+    expense_id: int,
+    expense_in: ExpenseUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    res = await db.execute(select(Expense).where(Expense.id == expense_id))
+    expense = res.scalar_one_or_none()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Xarajat topilmadi!")
+
+    for key, value in expense_in.model_dump(exclude_unset=True).items():
+        if value is not None:
+            setattr(expense, key, value)
+
+    await db.commit()
+    await db.refresh(expense)
+    return expense
+
+
+@router.delete("/expenses/{expense_id}")
+async def delete_expense(
+    expense_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    res = await db.execute(select(Expense).where(Expense.id == expense_id))
+    expense = res.scalar_one_or_none()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Xarajat topilmadi!")
+
+    await db.delete(expense)
+    await db.commit()
+    return {"message": "Xarajat muvaffaqiyatli o'chirildi!"}
 
 
 # ----------------------------------------------------
