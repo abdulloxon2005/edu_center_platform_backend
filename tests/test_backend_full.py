@@ -17,10 +17,9 @@ async def override_get_db():
     async with TestingSessionLocal() as session:
         yield session
 
-app.dependency_overrides[get_db] = override_get_db
-
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
+    app.dependency_overrides[get_db] = override_get_db
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
@@ -76,6 +75,7 @@ async def setup_db():
     
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    app.dependency_overrides.pop(get_db, None)
 
 # ----------------------------------------------------
 # 1. AUTHENTICATION & AUTHORIZATION TESTS
@@ -1160,7 +1160,7 @@ async def test_26_teacher_group_students_billing_and_debt_tracking():
         student_id = students[0]["id"]
         await ac.post(f"/api/v1/groups/{group_id}/students/{student_id}", headers=admin_headers)
 
-        test_month = "2026-08"
+        test_month = "2026-10"
 
         # 2. To'lov qilinmagan holatda o'qituvchi guruh billingini so'raydi
         unpaid_res = await ac.get(f"/api/v1/finance/group/{group_id}/students-billing?month_for={test_month}", headers=teacher_headers)

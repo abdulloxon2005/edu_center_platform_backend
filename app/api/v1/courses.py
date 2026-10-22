@@ -69,12 +69,12 @@ async def create_course(course_in: CourseCreate, db: AsyncSession = Depends(get_
     return course
 
 @router.get("/", response_model=List[CourseResponse])
-async def list_courses(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    result = await db.execute(select(Course))
+async def list_courses(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Course).where(Course.is_active == True))
     return result.scalars().all()
 
 @router.get("/{course_id}", response_model=CourseResponse)
-async def get_course(course_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_course(course_id: int, db: AsyncSession = Depends(get_db)):
     res = await db.execute(select(Course).where(Course.id == course_id))
     course = res.scalar_one_or_none()
     if not course:

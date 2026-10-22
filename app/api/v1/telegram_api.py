@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 
 from app.core.database import get_db
-from app.api.v1.finance import calculate_student_effective_fee
+from app.services.debt_service import calculate_student_effective_fee, calculate_student_debt
 from app.models.models import (
     User, UserRole, ParentStudent, GroupStudent, Group, Course,
     Payment, StudentBilling, Lesson, Attendance, AttendanceStatus
@@ -177,45 +177,8 @@ async def get_student_payments(
     rows = group_res.all()
     monthly_fee = sum(calculate_student_effective_fee(gs, c) for gs, _, c in rows)
 
-    # Joriy oy to'langan summa
-    month_pay_res = await db.execute(
-        select(func.sum(Payment.amount)).where(
-            Payment.student_id == student_id,
-            Payment.month_for == current_month
-        )
-    )
-    month_paid = month_pay_res.scalar() or 0.0
-
-    # Joriy oy billing
-    billing_res = await db.execute(
-        select(StudentBilling).where(
-            StudentBilling.student_id == student_id,
-            StudentBilling.month_for == current_month
-        )
-    )
-    billings = billing_res.scalars().all()
-    month_due = sum(b.amount_due for b in billings) if billings else monthly_fee
-    remaining = max(0.0, month_due - month_paid)
-    is_paid = month_paid >= month_due and month_due > 0
-
-    # Umumiy qarz / haqdorlik
-    all_billings_res = await db.execute(
-        select(func.sum(StudentBilling.amount_due)).where(
-            StudentBilling.student_id == student_id
-        )
-    )
-    total_due_val = all_billings_res.scalar()
-    total_due = total_due_val if total_due_val is not None else monthly_fee
-
-    all_payments_res = await db.execute(
-        select(func.sum(Payment.amount)).where(
-            Payment.student_id == student_id
-        )
-    )
-    total_paid = all_payments_res.scalar() or 0.0
-    net = total_paid - total_due
-    total_debt = abs(net) if net < 0 else 0.0
-    total_credit = net if net > 0 else 0.0
+    # Joriy oy bo'yicha to'lov va qarz (debt_service orqali)
+    debt_info = await calculate_student_debt(db, student_id, current_month)
 
     # Oxirgi 10 ta to'lov
     payments_res = await db.execute(
@@ -228,7 +191,7 @@ async def get_student_payments(
         TelegramPaymentItem(
             id=p.id,
             amount=p.amount,
-            payment_method=p.payment_method.value,
+            payment_method=p.payment_method.value if hasattr(p.payment_method, 'value') else str(p.payment_method),
             month_for=p.month_for,
             created_at=p.created_at,
             note=p.note
@@ -241,13 +204,13 @@ async def get_student_payments(
         student_name=student.full_name,
         login_id=student.login_id,
         current_month=current_month,
-        monthly_fee=monthly_fee,
-        month_amount_paid=month_paid,
-        month_amount_due=month_due,
-        remaining=remaining,
-        is_paid=is_paid,
-        total_debt=total_debt,
-        total_credit=total_credit,
+        monthly_fee=debt_info.total_monthly_fee,
+        month_amount_paid=debt_info.amount_paid,
+        month_amount_due=debt_info.total_monthly_fee,
+        remaining=debt_info.debt,
+        is_paid=debt_info.is_paid,
+        total_debt=debt_info.debt,
+        total_credit=debt_info.credit,
         recent_payments=recent_payments
     )
 

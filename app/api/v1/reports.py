@@ -113,7 +113,8 @@ async def collect_report_data(
 
     # 2. Expenses in date range
     exp_stmt = (
-        select(Expense)
+        select(Expense, User.full_name.label("employee_name"))
+        .outerjoin(User, Expense.employee_id == User.id)
         .where(
             Expense.date >= start_d,
             Expense.date <= end_d
@@ -121,12 +122,12 @@ async def collect_report_data(
         .order_by(desc(Expense.date))
     )
     exp_res = await db.execute(exp_stmt)
-    expenses = exp_res.scalars().all()
+    expenses = exp_res.all()
 
     total_expense = 0.0
     expenses_by_category: Dict[str, float] = {}
     expenses_list = []
-    for exp in expenses:
+    for exp, emp_name in expenses:
         total_expense += exp.amount
         cat = exp.category or "Boshqa"
         expenses_by_category[cat] = expenses_by_category.get(cat, 0.0) + exp.amount
@@ -136,7 +137,10 @@ async def collect_report_data(
             "amount": exp.amount,
             "category": cat,
             "date": exp.date.strftime("%Y-%m-%d") if exp.date else "",
-            "description": exp.description or ""
+            "description": exp.description or "",
+            "employee_id": exp.employee_id,
+            "employee_name": emp_name or "—",
+            "payment_method": exp.payment_method or "CASH"
         })
 
     # 3. Teacher Payrolls in date range
@@ -588,7 +592,7 @@ async def export_report_excel(
     ws_expenses["A1"] = f"Markaz Xarajatlari ({data['period_label']})"
     ws_expenses["A1"].font = title_font
 
-    exp_headers = ["№", "ID", "Sana", "Xarajat Nomi", "Kategoriya", "Summa (UZS)", "Tavsif"]
+    exp_headers = ["№", "ID", "Sana", "Xarajat Nomi", "Kategoriya", "Xodim", "To'lov Turi", "Summa (UZS)", "Tavsif"]
     for c_idx, h in enumerate(exp_headers, start=1):
         cell = ws_expenses.cell(row=3, column=c_idx, value=h)
         cell.font = header_font
@@ -603,10 +607,12 @@ async def export_report_excel(
         ws_expenses.cell(row=r_num, column=3, value=e["date"]).border = border_thin
         ws_expenses.cell(row=r_num, column=4, value=e["title"]).border = border_thin
         ws_expenses.cell(row=r_num, column=5, value=e["category"]).border = border_thin
-        e_amt = ws_expenses.cell(row=r_num, column=6, value=e["amount"])
+        ws_expenses.cell(row=r_num, column=6, value=e.get("employee_name", "—")).border = border_thin
+        ws_expenses.cell(row=r_num, column=7, value="Karta" if e.get("payment_method") == "CARD" else "Naqd").border = border_thin
+        e_amt = ws_expenses.cell(row=r_num, column=8, value=e["amount"])
         e_amt.number_format = "#,##0"
         e_amt.border = border_thin
-        ws_expenses.cell(row=r_num, column=7, value=e["description"]).border = border_thin
+        ws_expenses.cell(row=r_num, column=9, value=e["description"]).border = border_thin
 
     for col in ws_expenses.columns:
         max_len = max(len(str(cell.value or "")) for cell in col)

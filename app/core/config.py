@@ -15,7 +15,9 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7     # 7 kun
 
     # Baza konfiguratsiyasi
-    DATABASE_URL: str = "sqlite+aiosqlite:///./oquv_markaz.db"
+    _backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _default_db = os.path.join(_backend_dir, "oquv_markaz.db").replace("\\", "/")
+    DATABASE_URL: str = f"sqlite+aiosqlite:///{_default_db}"
     
     # Telegram Bot
     TELEGRAM_BOT_TOKEN: str = ""
@@ -29,7 +31,8 @@ class Settings(BaseSettings):
         "http://localhost:5173", "http://localhost:5174", "http://localhost:5175",
         "http://localhost:5176", "http://localhost:5177", "http://localhost:5178",
         "http://localhost:5179", "http://localhost:5180",
-        "http://localhost:3000", "http://127.0.0.1:5173"
+        "http://localhost:3000", "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000", "http://localhost:8000", "http://127.0.0.1:8000"
     ]
     EXTRA_CORS_ORIGINS: str = ""  # Comma-separated production domains
 

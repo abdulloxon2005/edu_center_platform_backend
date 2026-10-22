@@ -285,6 +285,8 @@ class ExpenseCreate(BaseModel):
     category: str
     date: date
     description: Optional[str] = None
+    employee_id: Optional[int] = None
+    payment_method: str = "CASH"
 
 class ExpenseUpdate(BaseModel):
     title: Optional[str] = None
@@ -292,6 +294,8 @@ class ExpenseUpdate(BaseModel):
     category: Optional[str] = None
     date: Optional[date] = None
     description: Optional[str] = None
+    employee_id: Optional[int] = None
+    payment_method: Optional[str] = None
 
 class ExpenseResponse(BaseModel):
     id: int
@@ -300,6 +304,9 @@ class ExpenseResponse(BaseModel):
     category: str
     date: date
     description: Optional[str] = None
+    employee_id: Optional[int] = None
+    employee_name: Optional[str] = None
+    payment_method: str = "CASH"
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

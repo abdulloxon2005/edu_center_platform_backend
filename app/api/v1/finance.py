@@ -1,7 +1,7 @@
 from datetime import date
 from io import BytesIO
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -23,100 +23,22 @@ from app.schemas.schemas import (
 from app.api.deps import get_current_admin, get_current_user
 from app.services.notification import send_telegram_notification
 from app.core.formatters import format_month_uz, format_payment_method_uz
+from app.services.debt_service import (
+    calculate_student_effective_fee,
+    calculate_student_debt,
+    calculate_batch_students_debt,
+    sync_student_billing_record,
+    is_month_before_debt_start,
+    DEBT_SYSTEM_START_MONTH
+)
 
 router = APIRouter()
 
 
-
-def calculate_student_effective_fee(gs: GroupStudent, crs: Course) -> float:
-    """O'quvchining guruhdagi individual tarifi yoki fan standart narxini hisoblash"""
-    if gs.discount_type == "GRANT_100":
-        return 0.0
-    elif gs.discount_type == "DISCOUNT_50":
-        return round(crs.price_monthly * 0.5, -2)
-    elif gs.custom_price is not None:
-        return float(gs.custom_price)
-    return float(crs.price_monthly)
-
-
 async def sync_student_billing(db: AsyncSession, student_id: int, month_for: str) -> Optional[StudentBilling]:
     """O'quvchining ko'rsatilgan oy bo'yicha to'lovlari asosida StudentBilling yozuvini aniq sinxronizatsiya qilish"""
-    # 1. Ushbu oy uchun to'langan barcha summalar (Payment jadvalining o'zidan)
-    pay_res = await db.execute(
-        select(func.sum(Payment.amount)).where(
-            Payment.student_id == student_id,
-            Payment.month_for == month_for
-        )
-    )
-    total_paid_for_month = pay_res.scalar() or 0.0
+    return await sync_student_billing_record(db, student_id, month_for)
 
-    # 2. O'quvchining faol guruhlari va oylik to'lovi (Individual tarif hisobga olingan holda)
-    stmt = (
-        select(GroupStudent, Group, Course)
-        .join(Group, GroupStudent.group_id == Group.id)
-        .join(Course, Group.course_id == Course.id)
-        .where(
-            GroupStudent.student_id == student_id,
-            GroupStudent.is_active == True,
-            Group.is_active == True
-        )
-    )
-    res_groups = await db.execute(stmt)
-    active_rows = res_groups.all()
-    total_monthly_fee = sum(calculate_student_effective_fee(gs, crs) for gs, _, crs in active_rows)
-    group_id = active_rows[0][1].id if active_rows else 1
-
-    # 3. StudentBilling yozuvlarini qidirish
-    billing_res = await db.execute(
-        select(StudentBilling).where(
-            StudentBilling.student_id == student_id,
-            StudentBilling.month_for == month_for
-        )
-    )
-    billings = billing_res.scalars().all()
-
-    if not billings:
-        if total_paid_for_month > 0 or total_monthly_fee >= 0:
-            due = total_monthly_fee
-            billing = StudentBilling(
-                student_id=student_id,
-                group_id=group_id,
-                month_for=month_for,
-                amount_due=due,
-                amount_paid=total_paid_for_month,
-                is_paid=(total_paid_for_month >= due),
-                due_date=date.today()
-            )
-            db.add(billing)
-            await db.flush()
-            return billing
-        return None
-    else:
-        primary_billing = billings[0]
-        total_due = sum(b.amount_due for b in billings)
-
-        # Agar narx o'zgargan bo'lsa va to'lov to'liq to'lanmagan bo'lsa, amount_due ni yangilash
-        if total_monthly_fee > 0 and total_due != total_monthly_fee:
-            if total_paid_for_month < total_due:
-                # To'lov to'liq to'lanmagan — narxni yangilash
-                primary_billing.amount_due = total_monthly_fee
-                total_due = total_monthly_fee
-                # Qo'shimcha billing yozuvlari bo'lsa ularni nolga qo'yish
-                for b in billings[1:]:
-                    b.amount_due = 0.0
-
-        if total_due <= 0 and total_monthly_fee > 0:
-            total_due = total_monthly_fee
-
-        primary_billing.amount_paid = total_paid_for_month
-        primary_billing.is_paid = (total_paid_for_month >= total_due)
-
-        for b in billings[1:]:
-            b.amount_paid = 0.0
-            b.is_paid = primary_billing.is_paid
-
-        await db.flush()
-        return primary_billing
 
 
 # ----------------------------------------------------
@@ -177,44 +99,7 @@ async def get_student_billing_info(
     await sync_student_billing(db, student_id, month_for)
     await db.commit()
 
-    # O'sha oy uchun to'langan aniq summa (Payment jadvalidan)
-    month_pay_res = await db.execute(
-        select(func.sum(Payment.amount)).where(
-            Payment.student_id == student_id,
-            Payment.month_for == month_for
-        )
-    )
-    month_amount_paid = month_pay_res.scalar() or 0.0
-
-    billing_res = await db.execute(
-        select(StudentBilling).where(
-            StudentBilling.student_id == student_id,
-            StudentBilling.month_for == month_for
-        )
-    )
-    billings = billing_res.scalars().all()
-    if billings:
-        month_amount_due = sum(b.amount_due for b in billings)
-    else:
-        month_amount_due = total_monthly_fee
-
-    month_remaining_due = max(0.0, month_amount_due - month_amount_paid)
-
-    # 4. Barcha oylar bo'yicha qarz / haqdorlik balansi
-    all_billings_res = await db.execute(
-        select(StudentBilling).where(StudentBilling.student_id == student_id)
-    )
-    all_billings = all_billings_res.scalars().all()
-    all_due = sum(b.amount_due for b in all_billings) if all_billings else total_monthly_fee
-
-    payments_res = await db.execute(
-        select(func.sum(Payment.amount)).where(Payment.student_id == student_id)
-    )
-    total_payments_sum = payments_res.scalar() or 0.0
-
-    net_balance = total_payments_sum - all_due
-    total_debt = abs(net_balance) if net_balance < 0 else 0.0
-    total_credit = net_balance if net_balance > 0 else 0.0
+    debt_info = await calculate_student_debt(db, student_id, month_for)
 
     return StudentBillingInfoResponse(
         student_id=student.id,
@@ -226,14 +111,17 @@ async def get_student_billing_info(
         parent_phone=student.parent_phone,
         telegram_chat_id=student.telegram_chat_id,
         groups=groups_info,
-        total_monthly_fee=total_monthly_fee,
+        total_monthly_fee=debt_info.total_monthly_fee,
         month_for=month_for,
-        month_amount_due=month_amount_due,
-        month_amount_paid=month_amount_paid,
-        month_remaining_due=month_remaining_due,
-        total_debt=total_debt,
-        total_credit=total_credit,
-        net_balance=net_balance
+        month_amount_due=debt_info.total_monthly_fee,
+        month_amount_paid=debt_info.amount_paid,
+        month_remaining_due=debt_info.debt,
+        month_surplus=debt_info.credit,
+        past_debt=0.0,
+        past_credit=0.0,
+        total_debt=debt_info.debt,
+        total_credit=debt_info.credit,
+        net_balance=debt_info.credit - debt_info.debt
     )
 
 
@@ -278,44 +166,10 @@ async def get_group_students_billing(
     for student in students:
         # Billing sinxronizatsiya
         await sync_student_billing(db, student.id, month_for)
-        
-        # Ushbu oy uchun to'langan jami summa (Payment jadvalidan)
-        month_pay_stmt = select(func.sum(Payment.amount)).where(
-            Payment.student_id == student.id,
-            Payment.month_for == month_for
-        )
-        month_pay_res = await db.execute(month_pay_stmt)
-        total_paid_this_month = month_pay_res.scalar() or 0.0
+        debt_info = await calculate_student_debt(db, student.id, month_for)
 
-        # Ushbu guruh uchun oylik to'lov summasi
-        b_stmt = select(StudentBilling).where(
-            StudentBilling.student_id == student.id,
-            StudentBilling.group_id == group_id,
-            StudentBilling.month_for == month_for
-        )
-        b_res = await db.execute(b_stmt)
-        billing_record = b_res.scalar_one_or_none()
-        expected_fee = billing_record.amount_due if billing_record else course_price
-
-        amount_paid = min(total_paid_this_month, expected_fee)
-        remaining_due = max(0.0, expected_fee - amount_paid)
-        is_paid = amount_paid >= expected_fee
-        is_partial = 0 < amount_paid < expected_fee
-
-        # Barcha oylar bo'yicha umumiy qarzdorlik
-        all_billings_res = await db.execute(
-            select(StudentBilling).where(StudentBilling.student_id == student.id)
-        )
-        all_billings = all_billings_res.scalars().all()
-        all_due = sum(b.amount_due for b in all_billings) if all_billings else expected_fee
-
-        payments_res = await db.execute(
-            select(func.sum(Payment.amount)).where(Payment.student_id == student.id)
-        )
-        total_payments_sum = payments_res.scalar() or 0.0
-        net_balance = total_payments_sum - all_due
-        total_debt = abs(net_balance) if net_balance < 0 else 0.0
-        total_credit = net_balance if net_balance > 0 else 0.0
+        is_paid = debt_info.is_paid
+        is_partial = 0 < debt_info.amount_paid < debt_info.total_monthly_fee
 
         result.append({
             "student_id": student.id,
@@ -326,14 +180,14 @@ async def get_group_students_billing(
             "mother_phone": student.mother_phone,
             "parent_phone": student.parent_phone,
             "month_for": month_for,
-            "expected_fee": expected_fee,
-            "amount_paid": amount_paid,
-            "remaining_due": remaining_due,
+            "expected_fee": debt_info.total_monthly_fee,
+            "amount_paid": debt_info.amount_paid,
+            "remaining_due": debt_info.debt,
             "is_paid": is_paid,
             "is_partial": is_partial,
-            "total_debt": total_debt,
-            "total_credit": total_credit,
-            "net_balance": net_balance,
+            "total_debt": debt_info.debt,
+            "total_credit": debt_info.credit,
+            "net_balance": debt_info.credit - debt_info.debt,
             "status": "PAID" if is_paid else "PARTIAL" if is_partial else "UNPAID"
         })
 
@@ -594,16 +448,62 @@ async def record_expense(
     db.add(expense)
     await db.commit()
     await db.refresh(expense)
-    return expense
+
+    emp_name = None
+    if expense.employee_id:
+        u_res = await db.execute(select(User.full_name).where(User.id == expense.employee_id))
+        emp_name = u_res.scalar_one_or_none()
+
+    return ExpenseResponse(
+        id=expense.id,
+        title=expense.title,
+        amount=expense.amount,
+        category=expense.category,
+        date=expense.date,
+        description=expense.description,
+        employee_id=expense.employee_id,
+        employee_name=emp_name,
+        payment_method=expense.payment_method or "CASH",
+        created_at=expense.created_at
+    )
 
 
 @router.get("/expenses", response_model=List[ExpenseResponse])
 async def list_expenses(
+    employee_id: Optional[int] = None,
+    payment_method: Optional[str] = None,
+    category: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
-    res = await db.execute(select(Expense).order_by(Expense.date.desc(), Expense.id.desc()))
-    return res.scalars().all()
+    stmt = (
+        select(Expense, User.full_name.label("employee_name"))
+        .outerjoin(User, Expense.employee_id == User.id)
+        .order_by(Expense.date.desc(), Expense.id.desc())
+    )
+    if employee_id:
+        stmt = stmt.where(Expense.employee_id == employee_id)
+    if payment_method and payment_method != "ALL":
+        stmt = stmt.where(Expense.payment_method == payment_method)
+    if category and category != "ALL":
+        stmt = stmt.where(Expense.category == category)
+
+    res = await db.execute(stmt)
+    results = []
+    for exp, emp_name in res.all():
+        results.append(ExpenseResponse(
+            id=exp.id,
+            title=exp.title,
+            amount=exp.amount,
+            category=exp.category,
+            date=exp.date,
+            description=exp.description,
+            employee_id=exp.employee_id,
+            employee_name=emp_name,
+            payment_method=exp.payment_method or "CASH",
+            created_at=exp.created_at
+        ))
+    return results
 
 
 @router.put("/expenses/{expense_id}", response_model=ExpenseResponse)
@@ -624,7 +524,24 @@ async def update_expense(
 
     await db.commit()
     await db.refresh(expense)
-    return expense
+
+    emp_name = None
+    if expense.employee_id:
+        u_res = await db.execute(select(User.full_name).where(User.id == expense.employee_id))
+        emp_name = u_res.scalar_one_or_none()
+
+    return ExpenseResponse(
+        id=expense.id,
+        title=expense.title,
+        amount=expense.amount,
+        category=expense.category,
+        date=expense.date,
+        description=expense.description,
+        employee_id=expense.employee_id,
+        employee_name=emp_name,
+        payment_method=expense.payment_method or "CASH",
+        created_at=expense.created_at
+    )
 
 
 @router.delete("/expenses/{expense_id}")
@@ -752,6 +669,14 @@ async def execute_monthly_billing_and_notify(db: AsyncSession, target_month: Opt
     if not target_month:
         target_month = date.today().strftime("%Y-%m")
 
+    if is_month_before_debt_start(target_month):
+        return {
+            "month_for": target_month,
+            "created_billings_count": 0,
+            "telegram_notifications_sent": 0,
+            "message": f"{target_month} oyi {DEBT_SYSTEM_START_MONTH} dan oldin bo'lgani uchun qarzdorlik hisoblanmaydi."
+        }
+
     groups_res = await db.execute(select(Group).where(Group.is_active == True))
     groups = groups_res.scalars().all()
 
@@ -843,56 +768,44 @@ async def auto_run_monthly_billing(
 
 @router.get("/debtors", response_model=List[DebtorResponse])
 async def list_debtors(
+    month_for: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
-    """Qarzdor o'quvchilar ro'yxatini va ularning qarzdorlik summasini olish"""
+    """Qarzdor o'quvchilar ro'yxatini va ularning qarzdorlik summasini olish (faqat 1 oylik va 2026-10 dan boshlab)"""
+    if not month_for:
+        month_for = date.today().strftime("%Y-%m")
+
+    # 2026-10 dan oldingi davrlar uchun qarzdorlik hisoblanmaydi
+    if is_month_before_debt_start(month_for):
+        return []
+
     stmt = select(User).where(User.role == UserRole.STUDENT, User.is_active == True)
     res = await db.execute(stmt)
     students = res.scalars().all()
+    if not students:
+        return []
+
+    debt_map = await calculate_batch_students_debt(db, [s.id for s in students], month_for)
 
     debtors = []
-    for student in students:
-        billings_res = await db.execute(
-            select(StudentBilling).where(
-                StudentBilling.student_id == student.id
-            )
-        )
-        all_billings = billings_res.scalars().all()
-
-        unpaid_billings = []
-        for b in all_billings:
-            pay_res = await db.execute(
-                select(func.sum(Payment.amount)).where(
-                    Payment.student_id == student.id,
-                    Payment.month_for == b.month_for
+    for s in students:
+        d_res = debt_map.get(s.id)
+        if d_res and d_res.debt > 0:
+            debtors.append(
+                DebtorResponse(
+                    student_id=s.id,
+                    student_name=s.full_name,
+                    phone=s.phone,
+                    father_phone=s.father_phone,
+                    mother_phone=s.mother_phone,
+                    parent_phone=s.parent_phone,
+                    login_id=s.login_id,
+                    total_debt=d_res.debt,
+                    unpaid_months=[month_for]
                 )
             )
-            actual_paid = pay_res.scalar() or 0.0
-            b.amount_paid = actual_paid
-            b.is_paid = (actual_paid >= b.amount_due and b.amount_due > 0)
-            if not b.is_paid:
-                unpaid_billings.append(b)
 
-        if unpaid_billings:
-            total_debt = sum(b.amount_due - b.amount_paid for b in unpaid_billings)
-            unpaid_months = list(dict.fromkeys(b.month_for for b in unpaid_billings))
-            if total_debt > 0:
-                debtors.append(
-                    DebtorResponse(
-                        student_id=student.id,
-                        student_name=student.full_name,
-                        phone=student.phone,
-                        father_phone=student.father_phone,
-                        mother_phone=student.mother_phone,
-                        parent_phone=student.parent_phone,
-                        login_id=student.login_id,
-                        total_debt=total_debt,
-                        unpaid_months=unpaid_months
-                    )
-                )
-
-    await db.commit()
     return debtors
 
 
@@ -940,8 +853,7 @@ async def create_invoice(invoice_in: InvoiceCreate, db: AsyncSession = Depends(g
 @router.get("/payments/{payment_id}/pdf")
 async def get_payment_receipt_pdf(
     payment_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db)
 ):
     res = await db.execute(select(Payment).where(Payment.id == payment_id))
     payment = res.scalar_one_or_none()
@@ -952,26 +864,95 @@ async def get_payment_receipt_pdf(
     student = std_res.scalar_one_or_none()
     student_name = student.full_name if student else "Noma'lum Student"
     student_id_code = student.login_id if student else "N/A"
+    student_phone = student.phone or student.parent_phone or "Mavjud emas"
+
+    # Guruh ma'lumotlarini aniqlash (o'quvchining faol guruhlari)
+    grp_res = await db.execute(
+        select(Group.name)
+        .join(GroupStudent, GroupStudent.group_id == Group.id)
+        .where(GroupStudent.student_id == payment.student_id, GroupStudent.is_active == True)
+    )
+    group_names = grp_res.scalars().all()
+    group_name = ", ".join(group_names) if group_names else "Umumiy ta'lim to'lovi"
 
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
+    
+    # Header dekoratsiya
+    p.setFillColorRGB(0.145, 0.388, 0.921) # #2563eb
+    p.rect(50, 720, 512, 60, fill=True, stroke=False)
+    
+    p.setFillColorRGB(1, 1, 1)
     p.setFont("Helvetica-Bold", 18)
-    p.drawString(100, 750, "Ta'lim Plus O'quv Markazi — TO'LOV CHEKI")
-    
-    p.setFont("Helvetica", 12)
-    p.drawString(100, 710, f"Chek ID: #{payment.id}")
-    p.drawString(100, 690, f"Sana: {payment.created_at.strftime('%Y-%m-%d %H:%M')}")
-    p.drawString(100, 660, f"O'quvchi: {student_name} (ID: {student_id_code})")
-    p.drawString(100, 640, f"Summa: {payment.amount:,.0f} so'm")
-    p.drawString(100, 620, f"To'lov turi: {format_payment_method_uz(payment.payment_method)}")
-    p.drawString(100, 600, f"Oy uchun: {format_month_uz(payment.month_for)}")
-    if payment.note:
-        p.drawString(100, 580, f"Izoh: {payment.note}")
+    p.drawString(70, 752, "Ta'lim Plus Education Center")
+    p.setFont("Helvetica", 11)
+    p.drawString(70, 735, "RASMIY TO'LOV CHEKI (PAYMENT RECEIPT)")
 
-    p.drawString(100, 520, "--------------------------------------------------------")
-    p.setFont("Helvetica-Oblique", 10)
-    p.drawString(100, 500, "To'lovingiz uchun rahmat! Ta'lim Plus jamoasi.")
+    # Asosiy ramka
+    p.setStrokeColorRGB(0.796, 0.859, 0.968) # #bfdbfe
+    p.setLineWidth(1)
+    p.rect(50, 240, 512, 460)
+
+    # Chek ma'lumotlari
+    p.setFillColorRGB(0.058, 0.090, 0.164) # #0f172a
+    p.setFont("Helvetica-Bold", 14)
+    p.drawString(70, 670, f"Chek raqami: #{payment.id}")
     
+    p.setFont("Helvetica", 10)
+    p.setFillColorRGB(0.392, 0.455, 0.545) # #64748b
+    p.drawString(70, 652, f"Sana va vaqt: {payment.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Chiziq
+    p.setStrokeColorRGB(0.886, 0.909, 0.941) # #e2e8f0
+    p.line(70, 638, 542, 638)
+
+    # Tafsilotlar
+    details = [
+        ("O'quvchi F.I.Sh:", f"{student_name}"),
+        ("Login ID raqami:", f"{student_id_code}"),
+        ("Telefon raqami:", f"{student_phone}"),
+        ("Guruh / Kurs:", f"{group_name}"),
+        ("To'lov oyi:", f"{format_month_uz(payment.month_for)}"),
+        ("To'lov usuli:", f"{format_payment_method_uz(payment.payment_method)}"),
+        ("Holat:", "Muvaffaqiyatli qabul qilindi (TASDIQLANGAN)"),
+    ]
+
+    y = 610
+    for label, val in details:
+        p.setFont("Helvetica-Bold", 10)
+        p.setFillColorRGB(0.278, 0.333, 0.412)
+        p.drawString(70, y, label)
+        
+        p.setFont("Helvetica", 10)
+        p.setFillColorRGB(0.058, 0.090, 0.164)
+        p.drawString(200, y, str(val))
+        y -= 26
+
+    if payment.note:
+        p.setFont("Helvetica-Bold", 10)
+        p.setFillColorRGB(0.278, 0.333, 0.412)
+        p.drawString(70, y, "Izoh:")
+        p.setFont("Helvetica-Oblique", 10)
+        p.setFillColorRGB(0.058, 0.090, 0.164)
+        p.drawString(200, y, payment.note[:50])
+        y -= 26
+
+    # Summa bloki (ajratilgan yorqin karta)
+    p.setFillColorRGB(0.937, 0.965, 1.0) # #eff6ff
+    p.rect(70, y - 45, 472, 45, fill=True, stroke=False)
+    p.setFillColorRGB(0.114, 0.306, 0.847)
+    p.setFont("Helvetica-Bold", 12)
+    p.drawString(85, y - 28, "JAMI TO'LANGAN SUMMA:")
+    p.setFont("Helvetica-Bold", 16)
+    p.drawString(340, y - 29, f"{payment.amount:,.0f} UZS")
+
+    # Pastki qism
+    p.setFont("Helvetica-Oblique", 9)
+    p.setFillColorRGB(0.392, 0.455, 0.545)
+    p.drawString(70, 275, "Ushbu to'lov cheki elektron tizim orqali avtomatik shakllantirilgan.")
+    p.drawString(70, 260, "Ta'lim Plus Education Center - Kelajagingiz biz bilan ishonchli qo'llarda!")
+    p.drawString(70, 246, "Platforma ishlab chiquvchisi: Roziyev Systems")
+
     p.showPage()
     p.save()
     buffer.seek(0)
@@ -979,7 +960,7 @@ async def get_payment_receipt_pdf(
     return StreamingResponse(
         buffer,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=receipt_{payment_id}.pdf"}
+        headers={"Content-Disposition": f"inline; filename=receipt_{payment_id}.pdf"}
     )
 
 

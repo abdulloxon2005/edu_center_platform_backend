@@ -305,7 +305,11 @@ class Expense(Base):
     category: Mapped[str] = mapped_column(String(50), nullable=False)
     date: Mapped[date] = mapped_column(Date, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    payment_method: Mapped[str] = mapped_column(String(20), default="CASH")  # CASH, CARD
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    employee: Mapped[Optional["User"]] = relationship("User")
 
 class RewardItem(Base):
     __tablename__ = "reward_items"

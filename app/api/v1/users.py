@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, case, cast, String
 
 from app.core.database import get_db
 from app.core.security import get_password_hash
@@ -25,6 +25,10 @@ from app.schemas.schemas import (
     TelegramNotificationLogResponse
 )
 from app.api.deps import get_current_admin, get_current_user
+from app.services.debt_service import (
+    calculate_batch_students_debt,
+    calculate_student_effective_fee
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,9 +86,10 @@ async def create_user(
 @router.get("/", response_model=List[UserResponse])
 async def list_users(
     role: Optional[UserRole] = None,
+    search: Optional[str] = Query(None, description="ID, ism yoki telefon bo'yicha qidiruv"),
     include_inactive: bool = Query(False),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
@@ -93,9 +98,176 @@ async def list_users(
         stmt = stmt.where(User.is_active == True)
     if role:
         stmt = stmt.where(User.role == role)
+
+    if search and search.strip():
+        search_clean = search.strip()
+        search_pattern = f"%{search_clean}%"
+        conditions = [
+            User.login_id.ilike(search_pattern),
+            User.full_name.ilike(search_pattern),
+            User.phone.ilike(search_pattern),
+            User.parent_phone.ilike(search_pattern),
+            User.father_phone.ilike(search_pattern),
+            User.mother_phone.ilike(search_pattern),
+        ]
+        if search_clean.isdigit():
+            conditions.append(User.id == int(search_clean))
+            conditions.append(cast(User.id, String).ilike(search_pattern))
+        stmt = stmt.where(or_(*conditions))
+
+        exact_match_score = case(
+            (User.login_id == search_clean, 1),
+            (cast(User.id, String) == search_clean, 1),
+            (User.login_id.startswith(search_clean), 2),
+            (User.full_name.ilike(f"{search_clean}%"), 3),
+            else_=4
+        )
+        stmt = stmt.order_by(exact_match_score, User.full_name.asc())
+    else:
+        stmt = stmt.order_by(User.id.desc())
+
     stmt = stmt.offset(skip).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
+
+@router.get("/students-overview")
+async def list_students_overview(
+    search: Optional[str] = Query(None),
+    course_id: Optional[str] = Query(None),
+    group_id: Optional[str] = Query(None),
+    student_status: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """Barcha o'quvchilar, ularning guruhlari, fanlari, to'lovlari va qarzdorligi bo'yicha umumiy ma'lumot"""
+    from datetime import date
+    current_month = date.today().strftime("%Y-%m")
+
+    # 1. Barcha studentlar
+    stmt = select(User).where(User.role == UserRole.STUDENT)
+    if student_status and student_status != "ALL":
+        stmt = stmt.where(User.student_status == student_status)
+
+    if search and search.strip():
+        s_clean = search.strip()
+        s_pattern = f"%{s_clean}%"
+        conds = [
+            User.login_id.ilike(s_pattern),
+            User.full_name.ilike(s_pattern),
+            User.phone.ilike(s_pattern),
+            User.parent_phone.ilike(s_pattern),
+            User.father_phone.ilike(s_pattern),
+            User.mother_phone.ilike(s_pattern)
+        ]
+        if s_clean.isdigit():
+            conds.append(User.id == int(s_clean))
+            conds.append(cast(User.id, String).ilike(s_pattern))
+        stmt = stmt.where(or_(*conds))
+
+        exact_match_score = case(
+            (User.login_id == s_clean, 1),
+            (cast(User.id, String) == s_clean, 1),
+            (User.login_id.startswith(s_clean), 2),
+            (User.full_name.ilike(f"{s_clean}%"), 3),
+            else_=4
+        )
+        stmt = stmt.order_by(exact_match_score, User.full_name.asc())
+    else:
+        stmt = stmt.order_by(User.id.desc())
+
+    res = await db.execute(stmt)
+    students = res.scalars().all()
+    if not students:
+        return []
+
+    student_ids = [s.id for s in students]
+
+    # 2. Guruh a'zoliklari
+    gs_stmt = (
+        select(
+            GroupStudent.student_id,
+            Group.id.label("group_id"),
+            Group.name.label("group_name"),
+            Course.id.label("course_id"),
+            Course.title.label("course_title"),
+            Course.price_monthly,
+            User.full_name.label("teacher_name"),
+            GroupStudent.is_active,
+            GroupStudent.discount_type,
+            GroupStudent.custom_price
+        )
+        .join(Group, GroupStudent.group_id == Group.id)
+        .outerjoin(Course, Group.course_id == Course.id)
+        .outerjoin(User, Group.teacher_id == User.id)
+        .where(GroupStudent.student_id.in_(student_ids), GroupStudent.is_active == True)
+    )
+    gs_res = await db.execute(gs_stmt)
+    gs_rows = gs_res.all()
+
+    student_groups_map = {}
+    for row in gs_rows:
+        sid = row.student_id
+        if sid not in student_groups_map:
+            student_groups_map[sid] = []
+
+        eff_fee = float(row.price_monthly or 0)
+        if row.discount_type == "GRANT_100":
+            eff_fee = 0.0
+        elif row.discount_type == "DISCOUNT_50":
+            eff_fee = round(eff_fee * 0.5, -2)
+        elif row.custom_price is not None:
+            eff_fee = float(row.custom_price)
+
+        student_groups_map[sid].append({
+            "group_id": row.group_id,
+            "group_name": row.group_name,
+            "course_id": row.course_id,
+            "course_title": row.course_title or "Fan",
+            "teacher_name": row.teacher_name or "O'qituvchi",
+            "effective_fee": eff_fee
+        })
+
+    # 3. Joriy oy bo'yicha to'lovlar va qarzdorlikni batch hisoblash (debt_service)
+    debt_map = await calculate_batch_students_debt(db, student_ids, current_month)
+
+    output = []
+    for s in students:
+        s_groups = student_groups_map.get(s.id, [])
+
+        if course_id and course_id != "ALL":
+            if not any(str(g["course_id"]) == str(course_id) for g in s_groups):
+                continue
+
+        if group_id and group_id != "ALL":
+            if not any(str(g["group_id"]) == str(group_id) for g in s_groups):
+                continue
+
+        d_res = debt_map.get(s.id)
+        total_due = d_res.total_monthly_fee if d_res else sum(g["effective_fee"] for g in s_groups)
+        paid = d_res.amount_paid if d_res else 0.0
+        debt = d_res.debt if d_res else 0.0
+        is_paid = d_res.is_paid if d_res else False
+
+        output.append({
+            "id": s.id,
+            "login_id": s.login_id,
+            "full_name": s.full_name,
+            "phone": s.phone,
+            "parent_phone": s.parent_phone or s.father_phone or s.mother_phone,
+            "student_status": s.student_status,
+            "coins_balance": s.coins_balance,
+            "telegram_chat_id": s.telegram_chat_id,
+            "created_at": s.created_at.strftime("%Y-%m-%d") if s.created_at else "",
+            "groups": s_groups,
+            "total_monthly_fee": total_due,
+            "month_amount_paid": paid,
+            "month_debt": debt,
+            "is_paid": is_paid
+        })
+
+    return output
+
+
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
