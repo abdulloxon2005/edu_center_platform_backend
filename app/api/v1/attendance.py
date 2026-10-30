@@ -14,6 +14,13 @@ from app.services.notification import send_telegram_notification
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+async def _lesson_has_attendance(db: AsyncSession, lesson_id: int) -> bool:
+    """Darsda kamida bitta davomat yozuvi bo'lsa - davomat olingan (yopilgan) hisoblanadi."""
+    res = await db.execute(
+        select(func.count(Attendance.id)).where(Attendance.lesson_id == lesson_id)
+    )
+    return (res.scalar() or 0) > 0
+
 @router.post("/lessons", response_model=LessonResponse)
 async def create_lesson(
     lesson_in: LessonCreate,
@@ -40,7 +47,9 @@ async def create_lesson(
     )
     existing_lesson = existing_res.scalar_one_or_none()
     if existing_lesson:
-        if lesson_in.topic:
+        # Davomat olingan (yopilgan) darsning mavzusini o'qituvchi o'zgartira olmaydi
+        locked = await _lesson_has_attendance(db, existing_lesson.id)
+        if lesson_in.topic and not (locked and current_user.role == UserRole.TEACHER):
             existing_lesson.topic = lesson_in.topic
         await db.commit()
         await db.refresh(existing_lesson)
@@ -85,6 +94,10 @@ async def delete_lesson(
     if not lesson:
         raise HTTPException(status_code=404, detail="Dars mashg'uloti topilmadi!")
 
+    # Davomat olingan darsni faqat admin o'chira oladi (aks holda yopish chetlab o'tiladi)
+    if current_user.role != UserRole.ADMIN and await _lesson_has_attendance(db, lesson_id):
+        raise HTTPException(status_code=403, detail="Davomat yopilgan! Faqat admin o'chira oladi.")
+
     # Darsga tegishli davomat yozuvlarini o'chirish
     await db.execute(delete(Attendance).where(Attendance.lesson_id == lesson_id))
     await db.delete(lesson)
@@ -104,6 +117,13 @@ async def mark_attendance(
     lesson = lesson_res.scalar_one_or_none()
     if not lesson:
         raise HTTPException(status_code=404, detail="Dars mashg'uloti topilmadi!")
+
+    # Davomat bir martalik: olingandan keyin yopiladi, qayta o'zgartirishni faqat admin qila oladi
+    if current_user.role != UserRole.ADMIN and await _lesson_has_attendance(db, lesson.id):
+        raise HTTPException(
+            status_code=403,
+            detail="Bu sana uchun davomat allaqachon olingan va yopilgan! Tahrirlash uchun admin bilan bog'laning."
+        )
 
     created_records = []
     updated_records = []
@@ -204,10 +224,19 @@ async def get_groups_attendance_summary(
         st_count_res = await db.execute(st_stmt)
         total_students = st_count_res.scalar() or 0
 
-        # Guruhning so'nggi darsi
-        lesson_stmt = select(Lesson).where(Lesson.group_id == grp.id).order_by(Lesson.lesson_date.desc(), Lesson.id.desc())
+        # Guruhning so'nggi darsi (davomat olingan darslar ustuvor: bo'sh dars sanasi 0/N ko'rsatmasligi uchun)
+        lesson_stmt = (
+            select(Lesson)
+            .where(Lesson.group_id == grp.id, Lesson.id.in_(select(Attendance.lesson_id)))
+            .order_by(Lesson.lesson_date.desc(), Lesson.id.desc())
+        )
         lesson_res = await db.execute(lesson_stmt)
         latest_lesson = lesson_res.scalars().first()
+        if not latest_lesson:
+            fallback_res = await db.execute(
+                select(Lesson).where(Lesson.group_id == grp.id).order_by(Lesson.lesson_date.desc(), Lesson.id.desc())
+            )
+            latest_lesson = fallback_res.scalars().first()
 
         present_count = 0
         absent_count = 0
@@ -346,21 +375,13 @@ async def get_group_attendance_journal(
         await db.commit()
 
     lessons = deduped_lessons
-    lessons_data = [
-        {
-            "id": l.id,
-            "lesson_date": str(l.lesson_date),
-            "topic": l.topic
-        }
-        for l in lessons
-    ]
-
     # 3. Barcha davomat yozuvlari
     matrix = {}
     for s in students:
         matrix[str(s.id)] = {}
 
     lesson_ids = [l.id for l in lessons]
+    attendances = []
     if lesson_ids:
         att_stmt = select(Attendance).where(Attendance.lesson_id.in_(lesson_ids))
         att_res = await db.execute(att_stmt)
@@ -374,6 +395,18 @@ async def get_group_attendance_journal(
                 "status": a.status,
                 "note": a.note
             }
+
+    # Davomat olingan (yopilgan) darslar
+    taken_lesson_ids = {a.lesson_id for a in attendances}
+    lessons_data = [
+        {
+            "id": l.id,
+            "lesson_date": str(l.lesson_date),
+            "topic": l.topic,
+            "attendance_taken": l.id in taken_lesson_ids
+        }
+        for l in lessons
+    ]
 
     return {
         "group": {
